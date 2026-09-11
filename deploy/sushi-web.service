@@ -1,0 +1,23 @@
+[Unit]
+Description=Sushi shop web administration
+After=network.target
+
+[Service]
+Type=simple
+User=sushi
+Group=sushi
+WorkingDirectory=/opt/sushi-bot
+ExecStart=/opt/sushi-bot/.venv/bin/uvicorn app.admin:app --host 127.0.0.1 --port 8000 --workers 1 --no-access-log --proxy-headers --forwarded-allow-ips 127.0.0.1
+Restart=on-failure
+RestartSec=5
+Environment=PYTHONUNBUFFERED=1
+Environment=PYTHONDONTWRITEBYTECODE=1
+UMask=0077
+NoNewPrivileges=true
+PrivateTmp=true
+ProtectHome=true
+ProtectSystem=strict
+ReadWritePaths=/opt/sushi-bot/data
+
+[Install]
+WantedBy=multi-user.target

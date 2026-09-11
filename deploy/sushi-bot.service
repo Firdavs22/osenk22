@@ -1,0 +1,24 @@
+[Unit]
+Description=Sushi shop Telegram bot
+After=network-online.target
+Wants=network-online.target
+
+[Service]
+Type=simple
+User=sushi
+Group=sushi
+WorkingDirectory=/opt/sushi-bot
+ExecStart=/opt/sushi-bot/.venv/bin/python -m app.bot
+Restart=on-failure
+RestartSec=10
+Environment=PYTHONUNBUFFERED=1
+Environment=PYTHONDONTWRITEBYTECODE=1
+UMask=0077
+NoNewPrivileges=true
+PrivateTmp=true
+ProtectHome=true
+ProtectSystem=strict
+ReadWritePaths=/opt/sushi-bot/data
+
+[Install]
+WantedBy=multi-user.target

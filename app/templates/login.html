@@ -1,0 +1,3 @@
+{% extends 'base.html' %}{% block title %}Вход{% endblock %}{% block content %}
+<div class="login-card"><span class="brand-mark large">秋</span><p class="eyebrow">ВАШ МАГАЗИН ПОД КОНТРОЛЕМ</p><h1>Добро пожаловать</h1><p class="muted">Войдите, чтобы управлять меню и заказами.</p><form method="post" action="/login"><input type="hidden" name="csrf" value="{{ csrf }}"><label>Логин<input name="username" autocomplete="username" required autofocus maxlength="100"></label><label>Пароль<input name="password" type="password" autocomplete="current-password" required maxlength="1024"></label><button class="primary wide" type="submit">Войти в панель →</button></form><p class="hint">Доступ только для администратора магазина.</p></div>
+{% endblock %}

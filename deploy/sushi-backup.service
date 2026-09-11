@@ -1,0 +1,16 @@
+[Unit]
+Description=Backup sushi shop database and photos
+
+[Service]
+Type=oneshot
+User=sushi
+Group=sushi
+WorkingDirectory=/opt/sushi-bot
+ExecStart=/opt/sushi-bot/.venv/bin/python -m app.manage backup
+Environment=PYTHONDONTWRITEBYTECODE=1
+UMask=0077
+NoNewPrivileges=true
+PrivateTmp=true
+ProtectHome=true
+ProtectSystem=strict
+ReadWritePaths=/opt/sushi-bot/data
