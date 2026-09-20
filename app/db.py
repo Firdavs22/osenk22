@@ -73,6 +73,8 @@ def init():
           ip TEXT PRIMARY KEY, attempts INTEGER NOT NULL, until REAL NOT NULL);
         ''')
         c.executemany('INSERT OR IGNORE INTO settings VALUES (?,?)', DEFAULTS.items())
+        from .schema import migrate
+        migrate(c)
 
 
 def settings(c=None):
@@ -200,7 +202,7 @@ def order_summary(order, items):
              f'Имя: {order["customer"]}', f'Телефон: {order["phone"]}',
              'Получение: ' + ('Доставка' if order['method'] == 'delivery' else 'Самовывоз'),
              f'Адрес: {order["address"]}', f'Комментарий: {order["comment"] or "—"}',
-             'Оплата при получении. Онлайн-оплата не производится.']
+             'Оплата: ' + ('при получении' if dict(order).get('payment_method', 'cash') == 'cash' else dict(order).get('payment_status', 'pending'))]
     return '\n'.join(lines)
 
 
@@ -229,12 +231,12 @@ def place_order(user, token):
         cursor = c.execute('''INSERT INTO orders(token,user_id,customer,phone,method,address,comment,subtotal,delivery,total,currency)
             VALUES (?,?,?,?,?,?,?,?,?,?,?)''', (token, user, d['customer'], d['phone'], d['method'], d['address'], d.get('comment',''), q['subtotal'], q['delivery'], q['total'], q['currency']))
         oid = cursor.lastrowid
-        c.executemany('INSERT INTO order_items(order_id,name,price,quantity) VALUES (?,?,?,?)',
-                      [(oid, p['name'], p['price'], p['quantity']) for p in q['items']])
+        c.executemany('INSERT INTO order_items(order_id,name,price,quantity,product_id,iiko_id,iiko_size) VALUES (?,?,?,?,?,?,?)',
+                      [(oid, p['name'], p['price'], p['quantity'], p['id'], p['iiko_id'], p['iiko_size']) for p in q['items']])
         order = c.execute('SELECT * FROM orders WHERE id=?', (oid,)).fetchone()
         summary = order_summary(order, q['items'])
         enqueue(c, user, 'Спасибо! Заказ получен, ожидайте подтверждения магазина.\n\n' + summary)
-        for admin in config.ADMIN_IDS:
+        for admin in admin_ids():
             enqueue(c, admin, '🍣 Новый заказ!\n\n' + summary)
         c.execute('DELETE FROM cart WHERE user_id=?', (user,))
         c.execute('DELETE FROM drafts WHERE user_id=?', (user,))
@@ -248,8 +250,14 @@ def set_status(oid, status):
             raise ValueError('Заказ не найден')
         if status not in TRANSITIONS[order['status']]:
             raise ValueError('Недопустимый переход статуса. Обновите страницу.')
+        if status != 'cancelled' and order['payment_method'] != 'cash' and order['payment_status'] != 'paid':
+            raise ValueError('Онлайн-оплата ещё не подтверждена банком')
         c.execute('UPDATE orders SET status=? WHERE id=?', (status, oid))
-        enqueue(c, order['user_id'], f'Заказ №{oid}: {STATUSES[status]}.')
+        if order['channel'] == 'telegram':
+            enqueue(c, order['user_id'], f'Заказ №{oid}: {STATUSES[status]}.')
+        if status == 'accepted':
+            from .integrations import queue_iiko
+            queue_iiko(c, oid)
 
 
 def login_allowed(ip):
@@ -282,3 +290,9 @@ def seed():
             ('Сет на двоих', 'Сеты', 'Филадельфия, Калифорния, маки с огурцом', '720 г · 24 шт.', 139000),
             ('Суши с лососем', 'Суши', 'Рис, лосось', '35 г · 1 шт.', 16000)]:
             c.execute('INSERT INTO products(category_id,name,ingredients,weight,price) VALUES (?,?,?,?,?)', (cats[cat], name, ingredients, weight, price))
+
+
+def admin_ids():
+    from .vault import get_config
+    cfg = get_config('telegram')
+    return cfg.get('admin_ids', config.ADMIN_IDS) if cfg.get('enabled', True) else []

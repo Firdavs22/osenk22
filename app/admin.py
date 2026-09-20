@@ -53,7 +53,16 @@ async def lifespan(app):
     if len(config.SESSION_SECRET) < 32 or not config.ADMIN_PASSWORD_HASH.startswith('scrypt$'):
         raise RuntimeError('Создайте SESSION_SECRET и ADMIN_PASSWORD_HASH: см. README.md')
     db.init()
-    yield
+    import asyncio
+    from contextlib import suppress
+    from .integrations import worker
+    task = asyncio.create_task(worker())
+    try:
+        yield
+    finally:
+        task.cancel()
+        with suppress(asyncio.CancelledError):
+            await task
 
 
 app = FastAPI(lifespan=lifespan, docs_url=None, redoc_url=None, openapi_url=None)
@@ -73,7 +82,7 @@ async def headers(request: Request, call_next):
     response.headers['X-Frame-Options'] = 'DENY'
     response.headers['Referrer-Policy'] = 'same-origin'
     response.headers['Cache-Control'] = 'no-store'
-    response.headers['Content-Security-Policy'] = "default-src 'self'; img-src 'self' data:; style-src 'self'; script-src 'none'; base-uri 'none'; form-action 'self'; frame-ancestors 'none'"
+    response.headers['Content-Security-Policy'] = "default-src 'self'; img-src 'self' data:; style-src 'self'; script-src 'self'; connect-src 'self'; base-uri 'none'; form-action 'self'; frame-ancestors 'none'"
     return response
 
 
@@ -84,7 +93,7 @@ def authenticated(request):
 
 def require_admin(request):
     if not authenticated(request):
-        raise HTTPException(303, headers={'Location': '/login'})
+        raise HTTPException(303, headers={'Location': '/admin/login'})
 
 
 def csrf_token(request):
@@ -131,37 +140,37 @@ def health():
     return {'status': 'ok'}
 
 
-@app.get('/login')
+@app.get('/admin/login')
 def login_page(request: Request):
     if authenticated(request):
-        return redirect('/')
+        return redirect('/admin')
     return render(request, 'login.html')
 
 
-@app.post('/login')
+@app.post('/admin/login')
 async def login(request: Request):
     form = await form_data(request, admin=False)
     ip = request.client.host if request.client else 'unknown'
     if not db.login_allowed(ip):
-        return redirect('/login', error='Слишком много попыток. Повторите через 15 минут.')
+        return redirect('/admin/login', error='Слишком много попыток. Повторите через 15 минут.')
     password_ok = verify_password(str(form.get('password', '')), config.ADMIN_PASSWORD_HASH)
     valid = hmac.compare_digest(str(form.get('username', '')).encode(), config.ADMIN_USERNAME.encode()) and password_ok
     db.login_result(ip, valid)
     if not valid:
-        return redirect('/login', error='Неверный логин или пароль')
+        return redirect('/admin/login', error='Неверный логин или пароль')
     request.session.clear()
     request.session.update(admin=config.ADMIN_USERNAME, credential=config.ADMIN_PASSWORD_HASH[-32:], csrf=secrets.token_urlsafe(32))
-    return redirect('/')
+    return redirect('/admin')
 
 
-@app.post('/logout')
+@app.post('/admin/logout')
 async def logout(request: Request):
     await form_data(request)
     request.session.clear()
-    return redirect('/login')
+    return redirect('/admin/login')
 
 
-@app.get('/')
+@app.get('/admin')
 def dashboard(request: Request):
     require_admin(request)
     with db.connect() as c:
@@ -173,19 +182,19 @@ def dashboard(request: Request):
     return render(request, 'dashboard.html', orders=orders, counts=counts, totals=totals, product_count=product_count, failed=failed, page='dashboard')
 
 
-@app.get('/products')
+@app.get('/admin/products')
 def products_page(request: Request):
     require_admin(request)
     return render(request, 'products.html', products=db.products(), categories=db.categories(), page='products')
 
 
-@app.get('/products/new')
+@app.get('/admin/products/new')
 def new_product(request: Request):
     require_admin(request)
     return render(request, 'product_form.html', product=None, categories=db.categories(), page='products')
 
 
-@app.get('/products/{pid:int}')
+@app.get('/admin/products/{pid:int}')
 def edit_product(request: Request, pid: int):
     require_admin(request)
     p = db.product(pid)
@@ -216,7 +225,7 @@ async def save_photo(upload):
         raise ValueError('Не удалось прочитать изображение. Загрузите JPEG, PNG или WebP.')
 
 
-@app.post('/products/save')
+@app.post('/admin/products/save')
 async def save_product(request: Request):
     form = await form_data(request)
     filename = None
@@ -230,6 +239,10 @@ async def save_product(request: Request):
         ingredients = field(form, 'ingredients', 1000)
         description = field(form, 'description', 1000, False)
         weight = field(form, 'weight', 60, False)
+        tags = ', '.join(dict.fromkeys(t.strip() for t in field(form, 'tags', 160, False).split(',') if t.strip()))
+        from .integrations import uuid_field
+        iiko_id = uuid_field(field(form, 'iiko_id', 36, False))
+        iiko_size = uuid_field(field(form, 'iiko_size', 36, False))
         price = db.parse_money(form.get('price'), allow_zero=False)
         if category not in [r['id'] for r in db.categories()]:
             raise ValueError('Выберите существующую категорию')
@@ -240,30 +253,30 @@ async def save_product(request: Request):
         if upload and getattr(upload, 'filename', ''):
             filename = await save_photo(upload)
             photo = filename
-        values = (category, name, description, ingredients, weight, price, photo, int(form.get('active') == 'on'))
+        values = (category, name, description, ingredients, weight, price, photo, int(form.get('active') == 'on'), tags, iiko_id, iiko_size)
         with db.connect(True) as c:
             if pid:
-                c.execute('UPDATE products SET category_id=?,name=?,description=?,ingredients=?,weight=?,price=?,photo=?,active=? WHERE id=?', (*values, pid))
+                c.execute('UPDATE products SET category_id=?,name=?,description=?,ingredients=?,weight=?,price=?,photo=?,active=?,tags=?,iiko_id=?,iiko_size=? WHERE id=?', (*values, pid))
             else:
-                c.execute('INSERT INTO products(category_id,name,description,ingredients,weight,price,photo,active) VALUES (?,?,?,?,?,?,?,?)', values)
-        return redirect('/products', ok='Товар сохранён')
+                c.execute('INSERT INTO products(category_id,name,description,ingredients,weight,price,photo,active,tags,iiko_id,iiko_size) VALUES (?,?,?,?,?,?,?,?,?,?,?)', values)
+        return redirect('/admin/products', ok='Товар сохранён')
     except (ValueError, sqlite3.IntegrityError) as exc:
         if filename:
             (config.MEDIA / filename).unlink(missing_ok=True)
-        return redirect('/products', error=exc)
+        return redirect('/admin/products', error=exc)
     finally:
         await form.close()
 
 
-@app.post('/products/{pid:int}/toggle')
+@app.post('/admin/products/{pid:int}/toggle')
 async def toggle_product(request: Request, pid: int):
     await form_data(request)
     with db.connect(True) as c:
         c.execute('UPDATE products SET active=1-active WHERE id=?', (pid,))
-    return redirect('/products')
+    return redirect('/admin/products')
 
 
-@app.post('/categories')
+@app.post('/admin/categories')
 async def save_category(request: Request):
     form = await form_data(request)
     try:
@@ -274,12 +287,12 @@ async def save_category(request: Request):
                 c.execute('UPDATE categories SET name=? WHERE id=?', (name, cid))
             else:
                 c.execute('INSERT INTO categories(name) VALUES (?)', (name,))
-        return redirect('/products', ok='Категория сохранена')
+        return redirect('/admin/products', ok='Категория сохранена')
     except (ValueError, sqlite3.IntegrityError):
-        return redirect('/products', error='Введите уникальное название категории, до 50 символов')
+        return redirect('/admin/products', error='Введите уникальное название категории, до 50 символов')
 
 
-@app.get('/orders')
+@app.get('/admin/orders')
 def orders_page(request: Request, status: str = '', page_num: int = 1):
     require_admin(request)
     page_num = max(1, page_num)
@@ -290,7 +303,7 @@ def orders_page(request: Request, status: str = '', page_num: int = 1):
     return render(request, 'orders.html', orders=orders, status=status, page_num=page_num, count=count, page='orders')
 
 
-@app.get('/orders/{oid:int}')
+@app.get('/admin/orders/{oid:int}')
 def order_page(request: Request, oid: int):
     require_admin(request)
     with db.connect() as c:
@@ -301,23 +314,23 @@ def order_page(request: Request, oid: int):
     return render(request, 'order.html', order=order, items=items, page='orders')
 
 
-@app.post('/orders/{oid:int}/status')
+@app.post('/admin/orders/{oid:int}/status')
 async def order_status(request: Request, oid: int):
     form = await form_data(request)
     try:
         db.set_status(oid, str(form.get('status')))
-        return redirect(f'/orders/{oid}', ok='Статус изменён. Уведомление поставлено в очередь.')
+        return redirect(f'/admin/orders/{oid}', ok='Статус изменён. Уведомление поставлено в очередь.')
     except ValueError as exc:
-        return redirect(f'/orders/{oid}', error=exc)
+        return redirect(f'/admin/orders/{oid}', error=exc)
 
 
-@app.get('/settings')
+@app.get('/admin/settings')
 def settings_page(request: Request):
     require_admin(request)
     return render(request, 'settings.html', page='settings')
 
 
-@app.post('/settings')
+@app.post('/admin/settings')
 async def settings_save(request: Request):
     form = await form_data(request)
     try:
@@ -328,12 +341,12 @@ async def settings_save(request: Request):
         values.update({k: '1' if form.get(k) == 'on' else '0' for k in ('orders_open', 'delivery_enabled')})
         with db.connect(True) as c:
             c.executemany('UPDATE settings SET value=? WHERE key=?', [(v, k) for k, v in values.items()])
-        return redirect('/settings', ok='Настройки сохранены')
+        return redirect('/admin/settings', ok='Настройки сохранены')
     except ValueError as exc:
-        return redirect('/settings', error=exc)
+        return redirect('/admin/settings', error=exc)
 
 
-@app.get('/notifications')
+@app.get('/admin/notifications')
 def notification_page(request: Request):
     require_admin(request)
     with db.connect() as c:
@@ -341,15 +354,15 @@ def notification_page(request: Request):
     return render(request, 'notifications.html', notifications=rows, page='notifications')
 
 
-@app.post('/notifications/{nid:int}/retry')
+@app.post('/admin/notifications/{nid:int}/retry')
 async def retry_notification(request: Request, nid: int):
     await form_data(request)
     with db.connect(True) as c:
         c.execute('UPDATE outbox SET sent=0,attempts=0,next_try=0 WHERE id=? AND sent=-1', (nid,))
-    return redirect('/notifications', ok='Повторная отправка запланирована')
+    return redirect('/admin/notifications', ok='Повторная отправка запланирована')
 
 
-@app.get('/media/{filename}')
+@app.get('/admin/media/{filename}')
 def media(request: Request, filename: str):
     require_admin(request)
     if Path(filename).name != filename or not filename.endswith('.jpg'):
@@ -358,3 +371,14 @@ def media(request: Request, filename: str):
     if not path.is_file():
         raise HTTPException(404)
     return FileResponse(path, media_type='image/jpeg')
+
+
+@app.get('/login')
+def legacy_login():
+    return redirect('/admin/login')
+
+
+from .store import router as store_router
+from .content_admin import router as content_router
+app.include_router(store_router)
+app.include_router(content_router)

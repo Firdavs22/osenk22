@@ -58,6 +58,9 @@ def backup(output=None):
             source.backup(dest)
         with zipfile.ZipFile(target, 'w', zipfile.ZIP_DEFLATED) as archive:
             archive.write(snapshot, 'shop.sqlite3')
+            key = config.DATA / 'integrations.key'
+            if key.exists():
+                archive.write(key, 'integrations.key')
             for path in config.MEDIA.glob('*.jpg'):
                 archive.write(path, 'media/' + path.name)
     if os.name != 'nt':

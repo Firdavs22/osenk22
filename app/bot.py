@@ -293,30 +293,49 @@ async def notification_loop(bot):
         await asyncio.sleep(2)
 
 
+def telegram_token():
+    from .vault import get_config
+    cfg = get_config('telegram')
+    return (cfg.get('token') or config.BOT_TOKEN) if cfg.get('enabled', True) else ''
+
+
+async def watch_token(token):
+    while telegram_token() == token:
+        await asyncio.sleep(15)
+
+
 async def main():
-    if not config.BOT_TOKEN:
-        raise SystemExit('Заполните BOT_TOKEN в .env')
-    if not config.ADMIN_IDS:
-        raise SystemExit('Заполните ADMIN_IDS в .env. Свой ID можно получить у @userinfobot.')
     db.init()
-    bot = Bot(config.BOT_TOKEN)
-    try:
-        await bot.delete_webhook(drop_pending_updates=False)
-        await bot.set_my_commands([BotCommand(command='menu', description='Меню'),
-                                   BotCommand(command='orders', description='Мои заказы'),
-                                   BotCommand(command='cancel', description='Отменить оформление'),
-                                   BotCommand(command='privacy', description='Обработка данных'),
-                                   BotCommand(command='id', description='Мой Telegram ID')])
-        worker = asyncio.create_task(notification_loop(bot))
+    while True:
+        token = telegram_token()
+        if not token:
+            await asyncio.sleep(15)
+            continue
+        bot = Bot(token)
+        tasks = []
         try:
-            # One polling process, sequential updates: checkout steps cannot race each other.
-            await dp.start_polling(bot, handle_as_tasks=False, close_bot_session=False)
+            await bot.delete_webhook(drop_pending_updates=False)
+            await bot.set_my_commands([BotCommand(command='menu', description='Меню'),
+                                       BotCommand(command='orders', description='Мои заказы'),
+                                       BotCommand(command='cancel', description='Отменить оформление'),
+                                       BotCommand(command='privacy', description='Обработка данных'),
+                                       BotCommand(command='id', description='Мой Telegram ID')])
+            tasks = [asyncio.create_task(notification_loop(bot)),
+                     asyncio.create_task(dp.start_polling(bot, handle_as_tasks=False, close_bot_session=False, handle_signals=False)),
+                     asyncio.create_task(watch_token(token))]
+            done, _ = await asyncio.wait(tasks, return_when=asyncio.FIRST_COMPLETED)
+            for task in done:
+                task.result()
+        except TelegramAPIError:
+            log.warning('Telegram unavailable; retrying in 15 seconds')
+            await asyncio.sleep(15)
         finally:
-            worker.cancel()
-            with suppress(asyncio.CancelledError):
-                await worker
-    finally:
-        await bot.session.close()
+            for task in tasks:
+                task.cancel()
+            for task in tasks:
+                with suppress(asyncio.CancelledError):
+                    await task
+            await bot.session.close()
 
 
 if __name__ == '__main__':

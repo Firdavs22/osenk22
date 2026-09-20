@@ -61,3 +61,7 @@ git push -u origin main
 Закрытый ключ не вставляется в YAML workflow. Секреты бота остаются на VPS: для доставки кода Actions не нужен Telegram-токен или содержимое базы.
 
 GitHub позволяет запускать workflows по событиям push и pull request, ограничивать права токена и хранить данные подключения в Secrets. См. [Python в GitHub Actions](https://docs.github.com/en/actions/tutorials/build-and-test-code/python), [настройка деплоя](https://docs.github.com/en/actions/how-tos/deploy/configure-and-manage-deployments/control-deployments), [секреты Actions](https://docs.github.com/en/actions/how-tos/write-workflows/choose-what-workflows-do/use-secrets).
+
+## Версия с публичной витриной
+
+Для перехода со старой админки на новую витрину используйте [STORE_LAUNCH.md](STORE_LAUNCH.md): требуется обновление зависимостей и миграция перед запуском. GitHub Actions проверяет код, но не подключается к VPS и не развёртывает его автоматически.
