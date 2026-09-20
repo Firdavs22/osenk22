@@ -257,6 +257,8 @@ async def save_product(request: Request):
         with db.connect(True) as c:
             if pid:
                 c.execute('UPDATE products SET category_id=?,name=?,description=?,ingredients=?,weight=?,price=?,photo=?,active=?,tags=?,iiko_id=?,iiko_size=? WHERE id=?', (*values, pid))
+                if filename or form.get('remove_photo') == 'on':
+                    c.execute('DELETE FROM menu_images WHERE product_id=?', (pid,))
             else:
                 c.execute('INSERT INTO products(category_id,name,description,ingredients,weight,price,photo,active,tags,iiko_id,iiko_size) VALUES (?,?,?,?,?,?,?,?,?,?,?)', values)
         return redirect('/admin/products', ok='Товар сохранён')
@@ -380,5 +382,7 @@ def legacy_login():
 
 from .store import router as store_router
 from .content_admin import router as content_router
+from .menu_import import router as menu_router
 app.include_router(store_router)
 app.include_router(content_router)
+app.include_router(menu_router)

@@ -111,7 +111,8 @@ def integrations_page(request: Request):
     with db.connect() as c:
         jobs = c.execute('SELECT order_id,state,error,attempts FROM iiko_jobs ORDER BY order_id DESC LIMIT 30').fetchall()
         payments = c.execute('SELECT order_id,state,error,attempts FROM payments ORDER BY order_id DESC LIMIT 30').fetchall()
-    return render(request,'integrations.html',configs=configs,taxes=TAXES,taxations=TAXATIONS,jobs=jobs,payments=payments,page='integrations')
+        image_counts = dict(c.execute('SELECT state,count(*) FROM menu_images GROUP BY state').fetchall())
+    return render(request,'integrations.html',configs=configs,taxes=TAXES,taxations=TAXATIONS,jobs=jobs,payments=payments,image_counts=image_counts,page='integrations')
 
 
 @router.post('/admin/integrations/{name}')
@@ -152,6 +153,8 @@ async def save_integration(request: Request, name: str):
             for k in ('app_id','organization_id','terminal_group','delivery_product','payment_type'):
                 value[k] = uuid_field(field(form,k,36,False))
             value['city_format'] = form.get('city_format')=='on'
+            value['external_menu'] = field(form,'external_menu',100,False)
+            value['price_category'] = uuid_field(field(form,'price_category',36,False))
             if value['enabled'] and not all(value.get(k) for k in ('api_key','app_id','client_secret','organization_id','terminal_group')):
                 raise ValueError('Для iiko нужны API key, appId, clientSecret, организация и терминал')
         set_config(name,value)
@@ -169,6 +172,7 @@ async def check_iiko(request: Request):
     cfg = get_config('iiko')
     try:
         organizations = await iiko_call(cfg,'/api/1/organizations',{'returnAdditionalInfo': True,'includeDisabled': False})
+        menus = await iiko_call(cfg,'/api/2/menu',{})
         catalog = None
         groups = None
         payment_types = None
@@ -177,7 +181,7 @@ async def check_iiko(request: Request):
             groups = await iiko_call(cfg,'/api/1/terminal_groups',orgs)
             payment_types = await iiko_call(cfg,'/api/1/payment_types',orgs)
             catalog = await iiko_call(cfg,'/api/1/nomenclature',{'organizationId':cfg['organization_id']})
-        return render(request,'iiko_check.html',result=json.dumps({'organizations':organizations,'terminalGroups':groups,'paymentTypes':payment_types,'catalog':catalog},ensure_ascii=False,indent=2),page='integrations')
+        return render(request,'iiko_check.html',result=json.dumps({'organizations':organizations,'externalMenus':menus,'terminalGroups':groups,'paymentTypes':payment_types,'catalog':catalog},ensure_ascii=False,indent=2),page='integrations')
     except Exception:
         return redirect('/admin/integrations',error='Не удалось прочитать iiko. Проверьте ключи, права API и доступность сервиса.')
 

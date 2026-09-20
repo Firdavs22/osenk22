@@ -9,7 +9,7 @@ DEFAULTS = {
 
 def migrate(c):
     columns = {
-        'products': {'tags': "TEXT NOT NULL DEFAULT ''", 'iiko_id': "TEXT NOT NULL DEFAULT ''", 'iiko_size': "TEXT NOT NULL DEFAULT ''"},
+        'products': {'tags': "TEXT NOT NULL DEFAULT ''", 'iiko_id': "TEXT NOT NULL DEFAULT ''", 'iiko_size': "TEXT NOT NULL DEFAULT ''", 'iiko_source': "TEXT NOT NULL DEFAULT ''"},
         'orders': {'channel': "TEXT NOT NULL DEFAULT 'telegram'", 'payment_method': "TEXT NOT NULL DEFAULT 'cash'",
                    'payment_status': "TEXT NOT NULL DEFAULT 'unpaid'", 'public_token': 'TEXT',
                    'consent_at': "TEXT NOT NULL DEFAULT ''", 'notified': 'INTEGER NOT NULL DEFAULT 1'},
@@ -22,6 +22,8 @@ def migrate(c):
                 c.execute(f'ALTER TABLE {table} ADD COLUMN {name} {definition}')
     # execute statements individually: executescript implicitly commits a migration transaction.
     for sql in [
+        'CREATE TABLE IF NOT EXISTS menu_imports(token TEXT PRIMARY KEY, payload TEXT NOT NULL, fingerprint TEXT NOT NULL, created REAL NOT NULL, result TEXT)',
+        "CREATE TABLE IF NOT EXISTS menu_images(product_id INTEGER PRIMARY KEY REFERENCES products(id), url TEXT NOT NULL, source TEXT NOT NULL, attempts INTEGER NOT NULL DEFAULT 0, state TEXT NOT NULL DEFAULT 'pending')",
         'CREATE UNIQUE INDEX IF NOT EXISTS orders_public ON orders(public_token)',
         "CREATE TABLE IF NOT EXISTS slides(id INTEGER PRIMARY KEY, title TEXT NOT NULL, subtitle TEXT NOT NULL DEFAULT '', button TEXT NOT NULL DEFAULT 'Выбрать роллы', target TEXT NOT NULL DEFAULT '#catalog', photo TEXT NOT NULL DEFAULT '', position INTEGER NOT NULL DEFAULT 0, active INTEGER NOT NULL DEFAULT 1)",
         'CREATE TABLE IF NOT EXISTS integrations(name TEXT PRIMARY KEY, config TEXT NOT NULL)',
