@@ -197,7 +197,7 @@ def notify_order(c, oid):
     summary = db.order_summary(order, items)
     recipients = db.admin_ids()
     for admin in recipients:
-        source = {'telegram':'из Telegram','telegram_app':'из мини-приложения Telegram','max_app':'из мини-приложения MAX'}.get(order['channel'],'с сайта')
+        source = {'telegram':'из Telegram','telegram_app':'из мини-приложения Telegram','max':'из чата MAX','max_app':'из мини-приложения MAX'}.get(order['channel'],'с сайта')
         db.enqueue(c, admin, 'Новый заказ ' + source + '!\n\n' + summary)
     if recipients:
         c.execute('UPDATE orders SET notified=1 WHERE id=?', (oid,))

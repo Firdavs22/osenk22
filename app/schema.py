@@ -66,6 +66,19 @@ def migrate(c):
         state TEXT NOT NULL DEFAULT 'pending',attempts INTEGER NOT NULL DEFAULT 0,
         next_try REAL NOT NULL DEFAULT 0,error TEXT NOT NULL DEFAULT '')""")
     c.execute('CREATE TABLE IF NOT EXISTS max_screens(bot_key TEXT NOT NULL,chat_id INTEGER NOT NULL,message_id TEXT NOT NULL,PRIMARY KEY(bot_key,chat_id))')
+    c.execute('''CREATE TABLE IF NOT EXISTS max_chat_sessions(
+        id INTEGER PRIMARY KEY AUTOINCREMENT,bot_key TEXT NOT NULL,user_id INTEGER NOT NULL,chat_id INTEGER NOT NULL,
+        step TEXT NOT NULL DEFAULT '',data TEXT NOT NULL,expires REAL NOT NULL DEFAULT 0,
+        notifications INTEGER NOT NULL DEFAULT 1,UNIQUE(bot_key,user_id))''')
+    c.execute('CREATE TABLE IF NOT EXISTS max_chat_results(id TEXT PRIMARY KEY,response TEXT NOT NULL,created REAL NOT NULL)')
+    c.execute('''CREATE TABLE IF NOT EXISTS max_order_recipients(
+        order_id INTEGER PRIMARY KEY REFERENCES orders(id),bot_key TEXT NOT NULL,user_id INTEGER NOT NULL,
+        chat_id INTEGER NOT NULL,notifications INTEGER NOT NULL DEFAULT 1)''')
+    c.execute('CREATE INDEX IF NOT EXISTS max_recipient_user ON max_order_recipients(bot_key,user_id,order_id)')
+    c.execute('''CREATE TABLE IF NOT EXISTS max_order_messages(
+        id INTEGER PRIMARY KEY AUTOINCREMENT,order_id INTEGER NOT NULL REFERENCES orders(id),event TEXT NOT NULL,text TEXT NOT NULL,
+        sent INTEGER NOT NULL DEFAULT 0,attempts INTEGER NOT NULL DEFAULT 0,next_try REAL NOT NULL DEFAULT 0,
+        error TEXT NOT NULL DEFAULT '',UNIQUE(order_id,event))''')
     c.execute('''CREATE TABLE IF NOT EXISTS customer_accounts(
         id INTEGER PRIMARY KEY AUTOINCREMENT,platform TEXT NOT NULL,bot_key TEXT NOT NULL,
         user_id INTEGER NOT NULL,chat_id INTEGER NOT NULL,phone TEXT NOT NULL,verified_at REAL NOT NULL,

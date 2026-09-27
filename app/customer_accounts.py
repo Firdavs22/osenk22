@@ -123,8 +123,11 @@ def history(platform, bot_key, user_id, before=0, compact=False):
         native = user_id if platform == 'telegram' else -1
         orders = c.execute('''SELECT o.* FROM orders o WHERE
             (EXISTS(SELECT 1 FROM customer_orders co WHERE co.order_id=o.id AND co.account_id=?)
-            OR (o.channel='telegram' AND o.user_id=? AND ?>0))
-            AND (?=0 OR o.id<?) ORDER BY o.id DESC LIMIT 6''', (aid,native,native,before,before)).fetchall()
+            OR (o.channel='telegram' AND o.user_id=? AND ?>0)
+            OR (?='max' AND EXISTS(SELECT 1 FROM max_order_recipients r
+                WHERE r.order_id=o.id AND r.bot_key=? AND r.user_id=?)))
+            AND (?=0 OR o.id<?) ORDER BY o.id DESC LIMIT 6''',
+            (aid,native,native,platform,str(bot_key),user_id,before,before)).fetchall()
         texts = []
         for o in orders[:5]:
             items = c.execute('SELECT * FROM order_items WHERE order_id=?',(o['id'],)).fetchall()
@@ -154,6 +157,10 @@ def queue(c, order, event='status'):
     accounts = c.execute('''SELECT a.* FROM customer_accounts a JOIN customer_orders co ON co.account_id=a.id
         WHERE co.order_id=? AND a.notifications=1''',(order['id'],)).fetchall()
     for account in accounts:
+        if account['platform']=='max' and c.execute('''SELECT 1 FROM max_order_recipients
+                WHERE order_id=? AND bot_key=? AND user_id=?''',
+                (order['id'],account['bot_key'],account['user_id'])).fetchone():
+            continue  # Native MAX has its own durable receipt/status queue.
         # Native Telegram receipts/status already have their own persistent outbox.
         if account['platform']=='telegram' and order['channel']=='telegram' and account['user_id']==order['user_id']:
             continue

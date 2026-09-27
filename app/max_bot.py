@@ -12,7 +12,7 @@ import time
 import httpx
 from fastapi import APIRouter, HTTPException, Request
 
-from . import config, db, customer_accounts as accounts
+from . import config, db, max_chat, customer_accounts as accounts
 from .mini_apps import public_origin
 from .vault import get_config, set_config, seal, unseal
 
@@ -73,15 +73,16 @@ async def api(cfg, method, path, body=None, params=None):
 
 def navigation(cfg, info=False):
     origin = public_origin(cfg.get('public_url'))
-    menu_button = {'type':'link','text':'🍣 Открыть меню','url':origin+'/mini/max'}
+    menu_button = {'type':'link','text':'Мини-приложение','url':origin+'/mini/max'}
     username = cfg.get('bot_username','')
     if cfg.get('mini_app') and re.fullmatch(r'[A-Za-z0-9_]{1,80}',username):
-        menu_button = {'type':'open_app','text':'🍣 Открыть меню','web_app':username}
+        menu_button = {'type':'open_app','text':'Мини-приложение','web_app':username}
     s = db.settings()
-    text = f'{s["shop_name"]}\nВыберите блюда в меню с фотографиями. Заказ оформляется в мини-приложении.'
+    text = f'{s["shop_name"]}\nВыбирайте блюда и оформляйте заказ прямо в чате.'
     if info:
         text = f'{s["shop_name"]}\nАдрес: {s["address"]}\nТелефон: {s["phone"]}\nВремя работы: {s["hours"]}'
     return {'text':text,'attachments':[{'type':'inline_keyboard','payload':{'buttons':[
+        [max_chat.button('🍣 Меню в чате','menu'),max_chat.button('🛒 Корзина','cart')],
         [menu_button],
         [{'type':'callback','text':'👤 Личный кабинет','payload':'account'},
          {'type':'callback','text':'📦 Мои заказы','payload':'orders'}],
@@ -91,7 +92,7 @@ def navigation(cfg, info=False):
 
 
 def event_data(event, cfg=None):
-    """Retain routing IDs and only cryptographically verified, encrypted contacts."""
+    """Store bounded checkout input encrypted; contacts require a valid signature."""
     kind = event.get('update_type')
     if kind not in EVENT_TYPES:
         return None
@@ -117,11 +118,19 @@ def event_data(event, cfg=None):
             return None
         callback = str(callback_data.get('callback_id') or '') if kind=='message_callback' else ''
         identity = callback or str((message.get('body') or {}).get('mid') or '')
-        action = 'info' if callback_data.get('payload')=='info' else 'menu'
+        action = 'text' if kind=='message_created' else 'menu'
         user = (callback_data.get('user') or {}).get('user_id') if kind=='message_callback' else (message.get('sender') or {}).get('user_id')
-        value = callback_data.get('payload') if kind=='message_callback' else ((message.get('body') or {}).get('text') or '').strip().lstrip('/')
-        if isinstance(value,str) and (value in ('account','orders','stopupdates','logout','cancel') or re.fullmatch(r'orders:[0-9]{1,18}',value)):
-            action=value
+        raw_text = (message.get('body') or {}).get('text') or ''
+        if not isinstance(raw_text,str):
+            raise ValueError()
+        value = callback_data.get('payload') if kind=='message_callback' else raw_text.strip().removeprefix('/')
+        commands = ('start','menu','cart','privacy','info','account','orders','stopupdates','logout','cancel')
+        if kind=='message_callback':
+            if not isinstance(value,str) or not (value in commands or re.fullmatch(r'orders:[0-9]{1,18}',value) or (value!='text' and max_chat.handles(value))):
+                return None
+            action='menu' if value=='start' else value
+        elif raw_text.strip().startswith('/') and value in commands:
+            action='menu' if value=='start' else value
         if kind=='message_created' and any(a.get('type')=='contact' for a in (message.get('body') or {}).get('attachments') or []):
             action='contact'
     if type(chat) is not int or not -(2**63)<chat<2**63 or not identity or len(identity)>200:
@@ -133,6 +142,9 @@ def event_data(event, cfg=None):
         result['message_id']=str((message.get('body') or {}).get('mid') or '')
     if type(user) is int and 0<user<2**63:
         result['user_id']=user
+        if action=='text':
+            # Overlong text is rejected by checkout validation, never silently truncated.
+            result['text']=seal(raw_text.strip() if len(raw_text.strip())<=500 else '')
         if action=='contact' and cfg:
             phone=accounts.max_contact_phone(event,cfg['token'])
             if phone:
@@ -170,23 +182,41 @@ async def webhook(request: Request):
     return {'ok':True}
 
 
+async def navigation_api(cfg, method, path, body, params):
+    """An unavailable product image must not block the ordering keyboard."""
+    try:
+        return await api(cfg,method,path,body,params)
+    except httpx.HTTPStatusError as exc:
+        message=body.get('message',body)
+        attachments=message.get('attachments',[])
+        if exc.response.status_code!=400 or not any(a.get('type')=='image' for a in attachments):
+            raise
+        fallback=dict(message,attachments=[a for a in attachments if a.get('type')!='image'])
+        fallback['text']+='\nФото временно недоступно.'
+        return await api(cfg,method,path,{'message':fallback} if 'message' in body else fallback,params)
+
+
 async def process_event(cfg, event):
     body = navigation(cfg,event['action']=='info')
     action,user,chat,key = event['action'],event.get('user_id'),event['chat_id'],bot_key(cfg)
     persistent = False
     if action=='account':
+        max_chat.reset(key,user)
         accounts.begin_contact('max',key,user,chat)
         body={'text':accounts.CONTACT_PROMPT,'attachments':[{'type':'inline_keyboard','payload':{'buttons':[
             [{'type':'request_contact','text':'Поделиться своим номером'}],
             [{'type':'callback','text':'Отмена','payload':'cancel'}]]}}]}
-    elif action=='contact':
+    elif action=='contact' and accounts.waiting_contact('max',key,user,chat):
         try:
             phone=unseal(event['contact']) if event.get('contact') else ''
             accounts.verify_contact('max',key,user,chat,phone)
+            max_chat.notifications(key,user,True)
             body['text']='Номер подтверждён. Уведомления включены. Нажмите «Мои заказы»: здесь будут и новые заказы с этим телефоном.'
         except ValueError as exc:
             body['text']=str(exc)
     elif action.startswith('orders'):
+        max_chat.reset(key,user)
+        accounts.cancel_contact('max',key,user)
         before=int(action.split(':')[1]) if ':' in action else 0
         texts,cursor,linked=accounts.history('max',key,user,before,compact=True)
         if texts:
@@ -198,9 +228,18 @@ async def process_event(cfg, event):
             body['text']='Заказов пока нет.' if linked else 'Для заказов с сайта подтвердите свой номер: /account.'
     elif action in ('stopupdates','logout'):
         accounts.stop('max',key,user,logout=action=='logout')
+        max_chat.reset(key,user)
+        max_chat.notifications(key,user,False)
         body['text']='Вы вышли. Заказы и сообщения в чате сохранены.' if action=='logout' else 'Уведомления отключены. История: /orders. Включить снова: /account.'
+    elif action=='text' and accounts.waiting_contact('max',key,user,chat):
+        body['text']='Для входа нужен собственный контакт кнопкой. Ввод номера текстом не открывает историю. /account — запросить кнопку, /cancel — отменить.'
+    elif max_chat.handles(action) or action=='contact':
+        if user:
+            accounts.cancel_contact('max',key,user)
+        body=max_chat.handle(cfg,event)
     elif user:
         accounts.cancel_contact('max',key,user)
+        max_chat.reset(key,user)
     if persistent:
         # History messages must never be edited/deleted by navigation callbacks.
         if event['callback_id']:
@@ -211,7 +250,7 @@ async def process_event(cfg, event):
         with db.connect() as c:
             tracked=c.execute('SELECT message_id FROM max_screens WHERE bot_key=? AND chat_id=?',(key,chat)).fetchone()
         if tracked and event.get('message_id')==tracked['message_id']:
-            await api(cfg,'POST','/answers',{'message':body},{'callback_id':event['callback_id']})
+            await navigation_api(cfg,'POST','/answers',{'message':body},{'callback_id':event['callback_id']})
             return
         await api(cfg,'POST','/answers',{'notification':'Готово'},{'callback_id':event['callback_id']})
     key, chat = bot_key(cfg),event['chat_id']
@@ -219,13 +258,13 @@ async def process_event(cfg, event):
         previous = c.execute('SELECT message_id FROM max_screens WHERE bot_key=? AND chat_id=?',(key,chat)).fetchone()
     if previous:
         try:
-            await api(cfg,'PUT','/messages',body,{'message_id':previous['message_id']})
+            await navigation_api(cfg,'PUT','/messages',body,{'message_id':previous['message_id']})
             return
         except httpx.HTTPStatusError as exc:
             if exc.response.status_code!=404:
                 raise
     try:
-        response = await api(cfg,'POST','/messages',body,{'chat_id':chat})
+        response = await navigation_api(cfg,'POST','/messages',body,{'chat_id':chat})
     except (httpx.ReadTimeout,httpx.WriteTimeout,httpx.ReadError,httpx.RemoteProtocolError):
         raise DeliveryUnknown() from None
     mid = str(((response.get('message') or {}).get('body') or {}).get('mid') or '')
@@ -244,8 +283,8 @@ async def send_persistent(cfg, chat, body):
         raise DeliveryUnknown()
 
 
-async def deliver_customer_once(cfg):
-    row=accounts.claim('max',bot_key(cfg))
+async def deliver_customer_once(cfg, native=False):
+    row=max_chat.claim(bot_key(cfg)) if native else accounts.claim('max',bot_key(cfg))
     if not row:
         return
     state,error,delay=1,'',30
@@ -258,20 +297,27 @@ async def deliver_customer_once(cfg):
         state=-1 if status in (400,401,403,404) else 0
         error=connection_error(exc)
         delay=min(600,30*2**row['attempts'])
-    accounts.complete(row['id'],state,error,delay)
+    (max_chat.complete if native else accounts.complete)(row['id'],state,error,delay)
+    return True
 
 
 async def tick():
     cfg = get_config('max')
     if not cfg.get('enabled') or not cfg.get('token'):
         return
-    await deliver_customer_once(cfg)
+    # At most one outbound message per tick, leaving headroom for callbacks.
+    if await deliver_customer_once(cfg,native=True) or await deliver_customer_once(cfg):
+        return
     now = time.time()
     with db.connect(True) as c:
         c.execute("UPDATE max_events SET state='failed',error='Исчерпаны попытки обработки события' WHERE state='pending' AND attempts>=5 AND next_try<=?",(now,))
         c.execute("UPDATE max_events SET state='failed',error='Токен MAX изменился; старое событие пропущено' WHERE bot_key<>? AND state='pending'",(bot_key(cfg),))
         c.execute("DELETE FROM max_events WHERE state IN ('done','failed') AND created<?",(now-7*86400,))
-        row = c.execute("SELECT * FROM max_events WHERE bot_key=? AND state='pending' AND attempts<5 AND next_try<=? ORDER BY created LIMIT 1",(bot_key(cfg),now)).fetchone()
+        row = c.execute("""SELECT e.* FROM max_events e WHERE bot_key=? AND state='pending' AND attempts<5 AND next_try<=?
+            AND NOT EXISTS(SELECT 1 FROM max_events older WHERE older.bot_key=e.bot_key AND older.state='pending'
+                AND json_extract(older.payload,'$.chat_id')=json_extract(e.payload,'$.chat_id')
+                AND (older.created<e.created OR (older.created=e.created AND older.rowid<e.rowid)))
+            ORDER BY created,rowid LIMIT 1""",(bot_key(cfg),now)).fetchone()
         if not row:
             return
         c.execute('UPDATE max_events SET next_try=?,attempts=attempts+1 WHERE id=?',(now+60,row['id']))

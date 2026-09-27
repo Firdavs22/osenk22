@@ -380,8 +380,10 @@ def notification_page(request: Request):
         rows = c.execute('SELECT * FROM outbox ORDER BY id DESC LIMIT 100').fetchall()
         customer_rows=c.execute('''SELECT m.*,a.platform,a.chat_id,a.notifications FROM customer_messages m
             JOIN customer_accounts a ON a.id=m.account_id ORDER BY m.id DESC LIMIT 100''').fetchall()
+        max_rows=c.execute('''SELECT m.*,r.chat_id,r.notifications FROM max_order_messages m
+            JOIN max_order_recipients r ON r.order_id=m.order_id ORDER BY m.id DESC LIMIT 100''').fetchall()
         missing = c.execute("SELECT count(*) FROM orders WHERE notified=0 AND status NOT IN ('cancelled','done') AND (payment_method<>'tbank' OR payment_status='paid')").fetchone()[0]
-    return render(request, 'notifications.html', notifications=rows, customer_notifications=customer_rows,
+    return render(request, 'notifications.html', notifications=rows, customer_notifications=customer_rows, max_notifications=max_rows,
                   telegram=telegram_state(), missing=missing, page='notifications')
 
 
@@ -391,6 +393,14 @@ async def retry_customer_notification(request: Request, nid: int):
     with db.connect(True) as c:
         c.execute("UPDATE customer_messages SET sent=0,attempts=0,next_try=0,error='' WHERE id=? AND sent=-1",(nid,))
     return redirect('/admin/notifications',ok='Повтор сообщения покупателю запланирован')
+
+
+@app.post('/admin/max-notifications/{nid:int}/retry')
+async def retry_max_notification(request: Request, nid: int):
+    await form_data(request)
+    with db.connect(True) as c:
+        c.execute("UPDATE max_order_messages SET sent=0,attempts=0,next_try=0,error='' WHERE id=? AND sent=-1",(nid,))
+    return redirect('/admin/notifications',ok='Повтор сообщения MAX запланирован')
 
 
 @app.post('/admin/notifications/{nid:int}/retry')

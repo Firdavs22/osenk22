@@ -281,6 +281,8 @@ def set_status(oid, status):
             queue_status(c, dict(order) | {'status':status})
         from .customer_accounts import queue
         queue(c, dict(order) | {'status':status})
+        from .max_chat import queue as queue_max
+        queue_max(c, dict(order) | {'status':status})
         if status == 'accepted':
             from .integrations import queue_iiko
             queue_iiko(c, oid)

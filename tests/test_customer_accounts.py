@@ -150,7 +150,7 @@ def test_max_verified_contact_events_history_and_persistent_notifications(client
     asyncio.run(max_bot.process_event(MAX,hist))
     assert calls[-1][0]=='POST' and 'Заказ №1' in calls[-1][2]['text']
     history_mid=f'mid-{len(calls)}'
-    back=dict(hist,callback_id='back',message_id=history_mid,action='menu')
+    back=dict(hist,identity='back',callback_id='back',message_id=history_mid,action='menu')
     asyncio.run(max_bot.process_event(MAX,back))
     assert not any(method in ('PUT','DELETE') and params.get('message_id')==history_mid for method,path,body,params in calls)
     assert not any(path=='/answers' and params['callback_id']=='back' and 'message' in body for method,path,body,params in calls)

@@ -156,7 +156,7 @@ def test_max_webhook_secret_dedupe_and_minimal_storage(client,monkeypatch):
     # its browser link with MAX's native launch button.
     set_config('max',MAX|{'mini_app':True,'bot_username':'shop_bot'})
     post_max(client,started(1750000000200));asyncio.run(max_bot.tick())
-    button=calls[-1][2]['attachments'][0]['payload']['buttons'][0][0]
+    button=next(b for row in calls[-1][2]['attachments'][0]['payload']['buttons'] for b in row if b['type']=='open_app')
     assert calls[-1][0]=='PUT' and button['type']=='open_app'
     assert button['web_app']=='shop_bot' and 'url' not in button
 
