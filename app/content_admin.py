@@ -116,7 +116,9 @@ def integrations_page(request: Request):
         jobs = c.execute('SELECT order_id,state,error,attempts FROM iiko_jobs ORDER BY order_id DESC LIMIT 30').fetchall()
         payments = c.execute('SELECT order_id,state,error,attempts FROM payments ORDER BY order_id DESC LIMIT 30').fetchall()
         image_counts = dict(c.execute('SELECT state,count(*) FROM menu_images GROUP BY state').fetchall())
-    return render(request,'integrations.html',configs=configs,taxes=TAXES,taxations=TAXATIONS,jobs=jobs,payments=payments,image_counts=image_counts,page='integrations')
+        sync = c.execute('SELECT * FROM menu_sync WHERE id=1').fetchone()
+        image_errors = c.execute("SELECT p.name,m.error FROM menu_images m JOIN products p ON p.id=m.product_id WHERE m.error<>'' ORDER BY p.id LIMIT 30").fetchall()
+    return render(request,'integrations.html',configs=configs,taxes=TAXES,taxations=TAXATIONS,jobs=jobs,payments=payments,image_counts=image_counts,sync=sync,image_errors=image_errors,page='integrations')
 
 
 @router.post('/admin/integrations/{name}')

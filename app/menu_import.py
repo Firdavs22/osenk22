@@ -44,7 +44,7 @@ def menu_failure(exc, cfg, stage):
         except ValueError:
             payload = {}
         if isinstance(payload, dict):
-            code = payload.get('errorCode') or payload.get('code')
+            code = payload.get('errorCode') or payload.get('code') or payload.get('error')
             secrets_in_config = [str(cfg[k]) for k in ('api_key','client_secret','app_id') if cfg.get(k)]
             if isinstance(code, str) and re.fullmatch(r'[A-Z][A-Z0-9_]{0,79}', code) and not any(s in code for s in secrets_in_config):
                 report['errorCode'] = code
@@ -89,9 +89,12 @@ def catalog_fingerprint(c):
 def photo_allowed(url):
     try:
         p = urlsplit(url)
-        # iiko documents this managed CDN for external-menu images. Never fetch arbitrary
-        # hosts, IP addresses, ports, credentials or redirects supplied by a menu.
-        return p.scheme == 'https' and bool(re.fullmatch(r'\d+\.selcdn\.ru', p.hostname or '')) and p.port in (None,443) and not p.username and not p.password
+        # iiko uses numeric CDN hosts and UUID-named Selectel storage hosts.
+        # Keep this allowlist narrow: no arbitrary origins, credentials or redirects.
+        host = p.hostname or ''
+        supported = (re.fullmatch(r'\d+\.selcdn\.ru', host)
+                     or re.fullmatch(r'[a-f0-9]{8}(?:-[a-f0-9]{4}){3}-[a-f0-9]{12}\.selstorage\.ru', host))
+        return p.scheme == 'https' and bool(supported) and p.port in (None,443) and not p.username and not p.password
     except ValueError:
         return False
 
@@ -233,7 +236,7 @@ def prepare_preview(c, data):
         if old:
             matched.add(old['id'])
         row['photo_supported'] = photo_allowed(row['photo_url'])
-    data['hide_ids'] = [p['id'] for p in products if p['iiko_source']==data['source'] and p['id'] not in matched and p['active']]
+    data['hide_ids'] = [p['id'] for p in products if p['iiko_source']==data['source'] and p['id'] not in matched and (p['iiko_available'] or p['active'])]
     return data
 
 
@@ -290,6 +293,50 @@ async def menu_diagnostic(request: Request):
     return JSONResponse(result,headers={'Content-Disposition':'attachment; filename="iiko-menu-diagnostic.json"'})
 
 
+def apply_rows(c, data):
+    """Caller holds the write transaction and has prepared a fresh preview."""
+    if not data['rows']:
+        raise ValueError('Пустое меню: каталог сохранён без изменений.')
+    counts = {'created':0,'updated':0,'hidden':0,'photos':0}
+    for row in data['rows']:
+        c.execute('INSERT OR IGNORE INTO categories(name) VALUES (?)',(row['category'],))
+        category = c.execute('SELECT id FROM categories WHERE name=?',(row['category'],)).fetchone()[0]
+        pid = row['local_id']
+        if pid:
+            old = c.execute('SELECT * FROM products WHERE id=?',(pid,)).fetchone()
+            active = bool(old['active'] or old['iiko_resume_active']) if row['available'] else False
+            resume = 0 if row['available'] else int(old['active'] or old['iiko_resume_active'])
+            counts['hidden'] += int(bool(old['active']) and not active)
+            c.execute('UPDATE products SET category_id=?,name=?,price=?,weight=?,iiko_source=?,active=?,iiko_available=?,iiko_resume_active=? WHERE id=?',
+                (category,row['name'],row['price'],row['weight'],data['source'],int(active),int(row['available']),resume,pid))
+            counts['updated'] += 1
+        else:
+            pid = c.execute("""INSERT INTO products(category_id,name,price,weight,description,ingredients,tags,active,iiko_id,iiko_size,iiko_source,iiko_available)
+                VALUES (?,?,?,?,?,'',?,0,?,?,?,?)""",
+                (category,row['name'],row['price'],row['weight'],row['description'],row['tags'],row['iiko_id'],row['iiko_size'],data['source'],int(row['available']))).lastrowid
+            counts['created'] += 1
+        current = c.execute('SELECT * FROM products WHERE id=?',(pid,)).fetchone()
+        if (not current['photo'] or current['photo']==current['iiko_photo']) and row['photo_url']:
+            # Refresh managed images, including replacements served at the same URL.
+            # Do not invalidate a download already running for this exact source.
+            job = c.execute('SELECT * FROM menu_images WHERE product_id=?',(pid,)).fetchone()
+            if not job or job['state']!='downloading' or job['url']!=row['photo_url'] or job['source']!=data['source']:
+                state = 'pending' if row['photo_supported'] else 'failed'
+                error = '' if row['photo_supported'] else 'Источник фото пока не поддерживается: ' + (urlsplit(row['photo_url']).hostname or 'неверный адрес')
+                c.execute("""INSERT INTO menu_images(product_id,url,source,state,error,job_token) VALUES (?,?,?,?,?,?)
+                    ON CONFLICT(product_id) DO UPDATE SET
+                    etag=CASE WHEN url=excluded.url AND source=excluded.source THEN etag ELSE '' END,
+                    last_modified=CASE WHEN url=excluded.url AND source=excluded.source THEN last_modified ELSE '' END,
+                    url=excluded.url,source=excluded.source,attempts=0,
+                    state=excluded.state,error=excluded.error,job_token=excluded.job_token,started=0""",
+                    (pid,row['photo_url'],data['source'],state,error,secrets.token_hex(16)))
+                counts['photos'] += int(row['photo_supported'])
+    for pid in data['hide_ids']:
+        counts['hidden'] += c.execute('SELECT active FROM products WHERE id=?',(pid,)).fetchone()[0]
+        c.execute('UPDATE products SET iiko_resume_active=MAX(active,iiko_resume_active),active=0,iiko_available=0 WHERE id=?',(pid,))
+    return counts
+
+
 def apply_import(token):
     with db.connect(True) as c:
         batch = c.execute('SELECT * FROM menu_imports WHERE token=?',(token,)).fetchone()
@@ -302,27 +349,7 @@ def apply_import(token):
             raise ValueError('Настройки меню изменились. Повторите загрузку.')
         if catalog_fingerprint(c) != batch['fingerprint']:
             raise ValueError('Каталог изменился после предпросмотра. Загрузите меню ещё раз.')
-        counts = {'created':0,'updated':0,'hidden':len(data['hide_ids']),'photos':0}
-        for row in data['rows']:
-            c.execute('INSERT OR IGNORE INTO categories(name) VALUES (?)',(row['category'],))
-            category_id = c.execute('SELECT id FROM categories WHERE name=?',(row['category'],)).fetchone()[0]
-            if row['local_id']:
-                # Preserve local composition, photography, descriptive text and publication.
-                c.execute('UPDATE products SET category_id=?,name=?,price=?,weight=?,iiko_source=?,active=CASE WHEN ? THEN active ELSE 0 END WHERE id=?',
-                          (category_id,row['name'],row['price'],row['weight'],data['source'],row['available'],row['local_id']))
-                pid = row['local_id']; counts['updated']+=1
-                if not row['available']:
-                    counts['hidden']+=1
-            else:
-                pid = c.execute("""INSERT INTO products(category_id,name,price,weight,description,ingredients,tags,active,iiko_id,iiko_size,iiko_source)
-                    VALUES (?,?,?,?,?,'',?,0,?,?,?)""",
-                    (category_id,row['name'],row['price'],row['weight'],row['description'],row['tags'],row['iiko_id'],row['iiko_size'],data['source'])).lastrowid
-                counts['created']+=1
-            current = c.execute('SELECT photo FROM products WHERE id=?',(pid,)).fetchone()[0]
-            if not current and row['photo_supported']:
-                c.execute("INSERT INTO menu_images(product_id,url,source) VALUES (?,?,?) ON CONFLICT(product_id) DO UPDATE SET url=excluded.url,source=excluded.source,attempts=0,state='pending'", (pid,row['photo_url'],data['source']))
-                counts['photos']+=1
-        c.executemany('UPDATE products SET active=0 WHERE id=?',[(pid,) for pid in data['hide_ids']])
+        counts = apply_rows(c, data)
         c.execute('UPDATE menu_imports SET result=? WHERE token=?',(json.dumps(counts),token))
         return counts
 
@@ -373,35 +400,72 @@ async def menu_apply(request: Request):
 async def load_image(row):
     from .admin import save_photo
     filename = None
+    committed = False
     try:
         if not photo_allowed(row['url']):
-            raise ValueError('Unsupported image host')
+            raise ValueError('Источник фото пока не поддерживается')
+        with db.connect() as c:
+            current = c.execute('SELECT photo,iiko_photo,iiko_photo_url FROM products WHERE id=?',(row['product_id'],)).fetchone()
+        conditional = {}
+        if (current and current['photo'] == current['iiko_photo'] and current['iiko_photo_url']==row['url']
+                and re.fullmatch(r'[a-f0-9]{32}\.jpg',current['photo']) and (config.MEDIA/current['photo']).is_file()):
+            if row.get('etag'):
+                conditional['If-None-Match'] = row['etag']
+            if row.get('last_modified'):
+                conditional['If-Modified-Since'] = row['last_modified']
         content = bytearray()
         async with httpx.AsyncClient(timeout=10,follow_redirects=False,trust_env=False) as client:
-            async with client.stream('GET',row['url']) as response:
+            async with client.stream('GET',row['url'],headers=conditional) as response:
+                if response.status_code == 304 and conditional:
+                    with db.connect(True) as c:
+                        c.execute("UPDATE menu_images SET state='done',error='' WHERE product_id=? AND job_token=?",(row['product_id'],row['job_token']))
+                    return
                 if response.status_code != 200:
-                    raise ValueError('Image unavailable')
+                    raise ValueError(f'Сервер фото вернул HTTP {response.status_code}')
+                headers = getattr(response,'headers',{})
+                etag = headers.get('etag','')[:500]
+                last_modified = headers.get('last-modified','')[:100]
                 async for chunk in response.aiter_bytes():
                     content.extend(chunk)
                     if len(content)>5*1024*1024:
-                        raise ValueError('Image too large')
+                        raise ValueError('Фото больше 5 МБ')
         filename = await save_photo(UploadFile(io.BytesIO(content),filename='menu-image'))
         with db.connect(True) as c:
-            saved = c.execute("UPDATE products SET photo=? WHERE id=? AND photo='' AND iiko_source=? AND EXISTS (SELECT 1 FROM menu_images WHERE product_id=? AND url=?)",(filename,row['product_id'],row['source'],row['product_id'],row['url'])).rowcount
-            c.execute("UPDATE menu_images SET state='done' WHERE product_id=? AND url=?",(row['product_id'],row['url']))
+            old = c.execute('SELECT iiko_photo FROM products WHERE id=?',(row['product_id'],)).fetchone()
+            saved = c.execute("""UPDATE products SET photo=?,iiko_photo=?,iiko_photo_url=?
+                WHERE id=? AND (photo='' OR photo=iiko_photo) AND iiko_source=?
+                AND EXISTS (SELECT 1 FROM menu_images WHERE product_id=? AND job_token=?)""",
+                (filename,filename,row['url'],row['product_id'],row['source'],row['product_id'],row['job_token'])).rowcount
+            c.execute("UPDATE menu_images SET state='done',error='',etag=?,last_modified=? WHERE product_id=? AND job_token=?",(etag,last_modified,row['product_id'],row['job_token']))
+        committed = bool(saved)
         if not saved:
             (config.MEDIA/filename).unlink(missing_ok=True)
-    except Exception:
-        if filename:
+        elif old and old['iiko_photo'] and old['iiko_photo'] != filename:
+            previous = old['iiko_photo']
+            if re.fullmatch(r'[a-f0-9]{32}\.jpg', previous):
+                with db.connect() as c:
+                    used = (c.execute('SELECT 1 FROM products WHERE photo=?',(previous,)).fetchone()
+                            or c.execute('SELECT 1 FROM slides WHERE photo=?',(previous,)).fetchone()
+                            or c.execute('SELECT 1 FROM settings WHERE value=?',(previous,)).fetchone())
+                if not used:
+                    (config.MEDIA/previous).unlink(missing_ok=True)
+    except Exception as exc:
+        if filename and not committed:
             (config.MEDIA/filename).unlink(missing_ok=True)
+        message = str(exc) if type(exc) is ValueError else type(exc).__name__ + ': не удалось загрузить изображение'
         with db.connect(True) as c:
-            c.execute("UPDATE menu_images SET state='failed' WHERE product_id=? AND attempts>=3",(row['product_id'],))
+            c.execute("UPDATE menu_images SET state=CASE WHEN attempts>=3 THEN 'failed' ELSE 'pending' END,error=? WHERE product_id=? AND job_token=?",
+                      (message[:250],row['product_id'],row['job_token']))
 
 
 async def image_tick():
     with db.connect(True) as c:
+        c.execute("UPDATE menu_images SET state='pending' WHERE state='downloading' AND started<?",(time.time()-120,))
         c.execute("UPDATE menu_images SET state='failed' WHERE state='pending' AND attempts>=3")
-        rows = [dict(r) for r in c.execute("SELECT * FROM menu_images WHERE state='pending' AND attempts<3 LIMIT 2")]
-        c.executemany('UPDATE menu_images SET attempts=attempts+1 WHERE product_id=?',[(r['product_id'],) for r in rows])
+        rows = [dict(r) for r in c.execute("SELECT * FROM menu_images WHERE state='pending' AND attempts<3 ORDER BY attempts,product_id LIMIT 2")]
+        for row in rows:
+            row['job_token'] = secrets.token_hex(16)
+            c.execute("UPDATE menu_images SET attempts=attempts+1,state='downloading',started=?,job_token=? WHERE product_id=?",
+                      (time.time(),row['job_token'],row['product_id']))
     if rows:
-        await asyncio.gather(*(asyncio.wait_for(load_image(row),timeout=20) for row in rows),return_exceptions=True)
+        await asyncio.gather(*(asyncio.wait_for(load_image(row),timeout=30) for row in rows),return_exceptions=True)

@@ -20,6 +20,9 @@ def migrate(c):
         'order_items': {'product_id': 'INTEGER', 'iiko_id': "TEXT NOT NULL DEFAULT ''", 'iiko_size': "TEXT NOT NULL DEFAULT ''"},
     }
     columns['products'].update({k: "TEXT NOT NULL DEFAULT ''" for k in ('allergens','nutrition','storage')})
+    columns['products'].update({'iiko_available':'INTEGER NOT NULL DEFAULT 1',
+        'iiko_resume_active':'INTEGER NOT NULL DEFAULT 0',
+        'iiko_photo':"TEXT NOT NULL DEFAULT ''", 'iiko_photo_url':"TEXT NOT NULL DEFAULT ''"})
     for table, fields in columns.items():
         existing = {row['name'] for row in c.execute(f'PRAGMA table_info({table})')}
         for name, definition in fields.items():
@@ -37,6 +40,17 @@ def migrate(c):
         "CREATE TABLE IF NOT EXISTS iiko_jobs(order_id INTEGER PRIMARY KEY REFERENCES orders(id), external_id TEXT UNIQUE NOT NULL, state TEXT NOT NULL DEFAULT 'pending', attempts INTEGER NOT NULL DEFAULT 0, next_try REAL NOT NULL DEFAULT 0, error TEXT NOT NULL DEFAULT '', payload TEXT NOT NULL DEFAULT '', credentials TEXT NOT NULL DEFAULT '')",
     ]:
         c.execute(sql)
+    existing = {row['name'] for row in c.execute('PRAGMA table_info(menu_images)')}
+    for name, definition in {'error':"TEXT NOT NULL DEFAULT ''", 'job_token':"TEXT NOT NULL DEFAULT ''",
+                             'etag':"TEXT NOT NULL DEFAULT ''", 'last_modified':"TEXT NOT NULL DEFAULT ''",
+                             'started':'REAL NOT NULL DEFAULT 0'}.items():
+        if name not in existing:
+            c.execute(f'ALTER TABLE menu_images ADD COLUMN {name} {definition}')
+    c.execute("""CREATE TABLE IF NOT EXISTS menu_sync(
+        id INTEGER PRIMARY KEY CHECK(id=1), next_run REAL NOT NULL DEFAULT 0,
+        lease_until REAL NOT NULL DEFAULT 0, owner TEXT NOT NULL DEFAULT '',
+        last_success TEXT NOT NULL DEFAULT '', result TEXT NOT NULL DEFAULT '', error TEXT NOT NULL DEFAULT '')""")
+    c.execute('INSERT OR IGNORE INTO menu_sync(id) VALUES (1)')
     c.executemany('INSERT OR IGNORE INTO settings VALUES (?,?)', DEFAULTS.items())
     if not c.execute('SELECT 1 FROM slides LIMIT 1').fetchone():
         c.execute('INSERT INTO slides(title,subtitle) VALUES (?,?)',

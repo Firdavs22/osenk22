@@ -229,13 +229,20 @@ def test_menu_error_metadata_rejects_sensitive_or_malformed_fields():
 
 
 @pytest.mark.parametrize('url',['http://102922.selcdn.ru/a','https://127.0.0.1/a','https://evil.test/a',
-    'https://102922.selcdn.ru.evil.test/a','https://user:pass@102922.selcdn.ru/a','https://102922.selcdn.ru:8000/a'])
+    'https://102922.selcdn.ru.evil.test/a','https://user:pass@102922.selcdn.ru/a','https://102922.selcdn.ru:8000/a',
+    'https://16a9564f-f8ec-42ba-a998-3027aa809e50.selstorage.ru.evil.test/a',
+    'https://evil.selstorage.ru/a','http://16a9564f-f8ec-42ba-a998-3027aa809e50.selstorage.ru/a'])
 def test_image_source_restrictions(url):
     assert not imp.photo_allowed(url)
 
 
 def test_image_worker_validates_and_saves_local_jpeg(shop,monkeypatch):
-    set_config('iiko',CFG);imp.apply_import(batch(menu()))
+    set_config('iiko',CFG)
+    data=menu()
+    url='https://16a9564f-f8ec-42ba-a998-3027aa809e50.selstorage.ru/iskraroll/image.JPEG'
+    data['itemCategories'][0]['items'][0]['itemSizes'][0]['buttonImageUrl']=url
+    assert imp.photo_allowed(url)
+    assert imp.apply_import(batch(data))['photos']==1
     blob=io.BytesIO();Image.new('RGB',(64,64),'red').save(blob,'PNG')
     class Response:
         status_code=200
@@ -246,7 +253,7 @@ def test_image_worker_validates_and_saves_local_jpeg(shop,monkeypatch):
         def __init__(self,**kwargs):assert kwargs['follow_redirects'] is False
         async def __aenter__(self):return self
         async def __aexit__(self,*args):pass
-        def stream(self,method,url):return Response()
+        def stream(self,method,url,**kwargs):return Response()
     monkeypatch.setattr(imp.httpx,'AsyncClient',Client)
     asyncio.run(imp.image_tick())
     with db.connect() as c:

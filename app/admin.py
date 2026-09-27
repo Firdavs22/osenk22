@@ -56,13 +56,16 @@ async def lifespan(app):
     import asyncio
     from contextlib import suppress
     from .integrations import worker
-    task = asyncio.create_task(worker())
+    from .menu_sync import worker as menu_worker, image_worker
+    tasks = [asyncio.create_task(fn()) for fn in (worker, menu_worker, image_worker)]
     try:
         yield
     finally:
-        task.cancel()
-        with suppress(asyncio.CancelledError):
-            await task
+        for task in tasks:
+            task.cancel()
+        for task in tasks:
+            with suppress(asyncio.CancelledError):
+                await task
 
 
 app = FastAPI(lifespan=lifespan, docs_url=None, redoc_url=None, openapi_url=None)
@@ -257,9 +260,14 @@ async def save_product(request: Request):
         values = (category, name, description, ingredients, weight, price, photo, int(form.get('active') == 'on'), tags, iiko_id, iiko_size)
         with db.connect(True) as c:
             if pid:
+                current = c.execute('SELECT iiko_available FROM products WHERE id=?',(pid,)).fetchone()
+                if form.get('active')=='on' and not current['iiko_available']:
+                    raise ValueError('Блюдо недоступно в выбранном меню iiko. Сначала обновите меню.')
                 c.execute('UPDATE products SET category_id=?,name=?,description=?,ingredients=?,weight=?,price=?,photo=?,active=?,tags=?,iiko_id=?,iiko_size=? WHERE id=?', (*values, pid))
+                c.execute('UPDATE products SET iiko_resume_active=0 WHERE id=?',(pid,))
                 if filename or form.get('remove_photo') == 'on':
                     c.execute('DELETE FROM menu_images WHERE product_id=?', (pid,))
+                    c.execute("UPDATE products SET iiko_photo='',iiko_photo_url='' WHERE id=?",(pid,))
             else:
                 pid = c.execute('INSERT INTO products(category_id,name,description,ingredients,weight,price,photo,active,tags,iiko_id,iiko_size) VALUES (?,?,?,?,?,?,?,?,?,?,?)', values).lastrowid
             c.execute('UPDATE products SET allergens=?,nutrition=?,storage=? WHERE id=?', (*food_info,pid))
@@ -276,7 +284,7 @@ async def save_product(request: Request):
 async def toggle_product(request: Request, pid: int):
     await form_data(request)
     with db.connect(True) as c:
-        c.execute('UPDATE products SET active=1-active WHERE id=?', (pid,))
+        c.execute('UPDATE products SET active=CASE WHEN active=1 THEN 0 ELSE iiko_available END,iiko_resume_active=0 WHERE id=?', (pid,))
     return redirect('/admin/products')
 
 
@@ -392,6 +400,8 @@ def legacy_login():
 from .store import router as store_router
 from .content_admin import router as content_router
 from .menu_import import router as menu_router
+from .menu_sync import router as sync_router
 app.include_router(store_router)
 app.include_router(content_router)
 app.include_router(menu_router)
+app.include_router(sync_router)

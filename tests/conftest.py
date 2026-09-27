@@ -28,11 +28,13 @@ def shop(tmp_path, monkeypatch):
 @pytest.fixture
 def client(shop, monkeypatch):
     from fastapi.testclient import TestClient
-    from app import admin, integrations
+    from app import admin, integrations, menu_sync
     import asyncio
     async def idle():
         await asyncio.Event().wait()
     monkeypatch.setattr(integrations, 'worker', idle)
+    monkeypatch.setattr(menu_sync, 'worker', idle)
+    monkeypatch.setattr(menu_sync, 'image_worker', idle)
     importlib.reload(admin)
     with TestClient(admin.app) as client:
         yield client

@@ -264,8 +264,6 @@ async def tick():
                 with db.connect(True) as c:
                     c.execute(f'UPDATE {table} SET error=? WHERE order_id=?', (message, oid))
                 log.warning('%s order %s: %s', table, oid, type(exc).__name__)
-    from .menu_import import image_tick
-    await image_tick()
 
 
 async def worker():
