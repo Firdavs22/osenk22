@@ -152,6 +152,13 @@ def test_max_webhook_secret_dedupe_and_minimal_storage(client,monkeypatch):
     assert 'https://shop.example/mini/max' in json.dumps(calls[0][2])
     post_max(client,started(1750000000100));asyncio.run(max_bot.tick())
     assert calls[-1][0]=='PUT' and calls[-1][3]=={'message_id':'mid-1'}
+    # After connecting the Mini App, refreshing an existing menu must replace
+    # its browser link with MAX's native launch button.
+    set_config('max',MAX|{'mini_app':True,'bot_username':'shop_bot'})
+    post_max(client,started(1750000000200));asyncio.run(max_bot.tick())
+    button=calls[-1][2]['attachments'][0]['payload']['buttons'][0][0]
+    assert calls[-1][0]=='PUT' and button['type']=='open_app'
+    assert button['web_app']=='shop_bot' and 'url' not in button
 
 
 def test_max_callback_edits_message_and_ignores_groups(client,monkeypatch):

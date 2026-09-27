@@ -73,16 +73,16 @@ async def api(cfg, method, path, body=None, params=None):
 
 def navigation(cfg, info=False):
     origin = public_origin(cfg.get('public_url'))
-    url = origin+'/mini/max'
+    menu_button = {'type':'link','text':'🍣 Открыть меню','url':origin+'/mini/max'}
     username = cfg.get('bot_username','')
     if cfg.get('mini_app') and re.fullmatch(r'[A-Za-z0-9_]{1,80}',username):
-        url = f'https://max.ru/{username}?startapp'
+        menu_button = {'type':'open_app','text':'🍣 Открыть меню','web_app':username}
     s = db.settings()
     text = f'{s["shop_name"]}\nВыберите блюда в меню с фотографиями. Заказ оформляется в мини-приложении.'
     if info:
         text = f'{s["shop_name"]}\nАдрес: {s["address"]}\nТелефон: {s["phone"]}\nВремя работы: {s["hours"]}'
     return {'text':text,'attachments':[{'type':'inline_keyboard','payload':{'buttons':[
-        [{'type':'link','text':'🍣 Открыть меню', 'url':url}],
+        [menu_button],
         [{'type':'callback','text':'👤 Личный кабинет','payload':'account'},
          {'type':'callback','text':'📦 Мои заказы','payload':'orders'}],
         [{'type':'callback','text':'📍 О магазине' if not info else '← Назад','payload':'info' if not info else 'menu'}],
