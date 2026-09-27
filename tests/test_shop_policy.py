@@ -68,7 +68,7 @@ def test_all_skipped_shows_reasons_without_mutation_and_diagnostic_is_redacted(c
     monkeypatch.setattr(imp,'iiko_call',api)
     before=[dict(p) for p in db.products()]
     page=client.post('/admin/integrations/iiko/menu-preview',data={'csrf':csrf})
-    assert 'нет однозначной цены' in page.text and 'Применить импорт' not in page.text
+    assert 'нет записи цены' in page.text and 'Применить импорт' not in page.text
     assert [dict(p) for p in db.products()]==before
     assert client.post('/admin/integrations/iiko/menu-diagnostic',data={'csrf':'wrong'}).status_code==403
     report=client.post('/admin/integrations/iiko/menu-diagnostic',data={'csrf':csrf})

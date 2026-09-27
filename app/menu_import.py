@@ -62,6 +62,24 @@ def optional_modifiers(groups):
     return True
 
 
+def price_organizations(record):
+    """Accept grouped prices and the per-organization shape observed in live v2."""
+    singular = record.get('organizationId')
+    grouped = record.get('organizations')
+    if singular is not None and not isinstance(singular, str):
+        return []
+    if grouped is not None and (not isinstance(grouped, list) or
+                                not all(isinstance(value, str) for value in grouped)):
+        return []
+    organizations = [value.lower() for value in grouped or []]
+    if singular is not None:
+        # Never resolve conflicting identifiers by silently preferring one shape.
+        if grouped is not None and set(organizations) != {singular.lower()}:
+            return []
+        return [singular.lower()]
+    return organizations
+
+
 def normalize_menu(menu, cfg, allow_empty=False):
     if menu.get('formatVersion') != 2 or not isinstance(menu.get('itemCategories'),list):
         raise ValueError('iiko вернула неподдерживаемый формат меню. Нужен внешний каталог версии 2.')
@@ -98,9 +116,16 @@ def normalize_menu(menu, cfg, allow_empty=False):
                         continue
                     if groups:
                         skipped.append(title + ': импортируется базовое блюдо без необязательных добавок')
-                    prices = [p.get('price') for p in size.get('prices') or [] if cfg['organization_id'].lower() in [str(o).lower() for o in p.get('organizations') or []]]
-                    if len(prices)!=1 or prices[0] is None:
-                        skipped.append(title + ': нет однозначной цены выбранной организации')
+                    prices = [p.get('price') for p in size.get('prices') or []
+                              if cfg['organization_id'].lower() in price_organizations(p)]
+                    if not prices:
+                        skipped.append(title + ': нет записи цены для выбранной организации; проверьте ID организации')
+                        continue
+                    if len(prices) != 1:
+                        skipped.append(title + ': несколько записей цены для выбранной организации; проверьте меню iiko')
+                        continue
+                    if prices[0] is None:
+                        skipped.append(title + ': iiko вернула цену null для выбранной организации; проверьте категорию цен и доступность блюда в iiko')
                         continue
                     price = db.parse_money(prices[0])
                     if price == 0:
@@ -175,7 +200,8 @@ def diagnostic(menu, cfg):
                 for group in (size.get('itemModifierGroups') or [])[:20]:
                     groups.append({'name':group.get('name'), 'optionalWithoutDefaults':optional_modifiers([group])})
                 sizes.append({'sizeId':size.get('sizeId'),'sizeName':size.get('sizeName'),
-                    'prices':[{'organizations':p.get('organizations'), 'price':p.get('price')} for p in (size.get('prices') or [])[:20]],
+                    'prices':[{key:p[key] for key in ('organizationId','organizations','price') if key in p}
+                              for p in (size.get('prices') or [])[:20]],
                     'modifierGroups':groups})
             samples.append({**{k:item.get(k) for k in ('itemId','name','type','orderItemType','canBeDivided','canSetOpenPrice','isMarked')},
                             'category':category.get('name'),'categoryHasSchedule':bool(category.get('schedules') or category.get('scheduleId')),

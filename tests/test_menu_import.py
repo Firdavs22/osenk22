@@ -110,6 +110,60 @@ def test_routes_require_admin_csrf_and_explicit_apply(client,monkeypatch):
     assert 'создано 1' in result.text and len(db.products())==6
 
 
+def test_per_organization_prices_import_and_diagnostic(shop):
+    set_config('iiko',CFG)
+    data=menu(); size=data['itemCategories'][0]['items'][0]['itemSizes'][0]
+    size['sizeId']=None; size['sizeName']=''
+    size['prices']=[{'organizationId':SIZE,'price':990}, {'organizationId':ORG,'price':480,'token':'not-exported'}]
+    result=imp.apply_import(batch(data))
+    assert result['created']==1
+    with db.connect() as c:
+        product=c.execute('SELECT * FROM products WHERE iiko_id=?',(PRODUCT,)).fetchone()
+        assert product['price']==48000 and product['iiko_size']=='' and product['active']==0
+    report=imp.diagnostic(data,CFG)
+    prices=report['first30Items'][0]['sizes'][0]['prices']
+    assert prices==[{'organizationId':SIZE,'price':990},{'organizationId':ORG,'price':480}]
+    assert 'not-exported' not in json.dumps(report)
+
+
+@pytest.mark.parametrize('prices,reason',[
+    ([{'organizationId':ORG,'price':None}], 'цену null'),
+    ([{'organizationId':ORG}], 'цену null'),
+    ([{'organizationId':SIZE,'price':480}], 'нет записи цены'),
+    ([{'organizationId':ORG,'price':480},{'organizations':[ORG],'price':490}], 'несколько записей'),
+    ([{'organizationId':ORG,'organizations':[SIZE],'price':480}], 'нет записи цены'),
+    ([{'organizations':ORG,'price':480}], 'нет записи цены'),
+    ([{'organizationId':ORG,'price':0}], 'нулевая цена'),
+])
+def test_per_organization_invalid_prices_are_not_guessed(prices,reason):
+    data=menu();data['itemCategories'][0]['items'][0]['itemSizes'][0]['prices']=prices
+    parsed=imp.normalize_menu(data,CFG,allow_empty=True)
+    assert parsed['rows']==[] and reason in parsed['skipped'][0]
+
+
+def test_live_null_price_diagnostic_keeps_organization(client,monkeypatch):
+    csrf=login(client);set_config('iiko',CFG)
+    data=menu();data['itemCategories'][0]['items'][0]['itemSizes'][0]['prices']=[{'organizationId':ORG,'price':None}]
+    async def api(*args,**kwargs):return data
+    monkeypatch.setattr(imp,'iiko_call',api)
+    before=[dict(p) for p in db.products()]
+    page=client.post('/admin/integrations/iiko/menu-preview',data={'csrf':csrf})
+    assert 'цену null' in page.text and 'Применить импорт' not in page.text
+    report=client.post('/admin/integrations/iiko/menu-diagnostic',data={'csrf':csrf}).json()
+    assert report['first30Items'][0]['sizes'][0]['prices']==[{'organizationId':ORG,'price':None}]
+    assert [dict(p) for p in db.products()]==before
+
+
+def test_both_price_shapes_match_uuid_case_insensitively():
+    org='7274a1ac-fcb7-46ac-b9e8-98ba68c389be'
+    data=menu()
+    for price in ({'organizationId':org.upper(),'price':480},
+                  {'organizations':[org.upper()],'price':480},
+                  {'organizationId':org,'organizations':[org.upper()],'price':480}):
+        data['itemCategories'][0]['items'][0]['itemSizes'][0]['prices']=[price]
+        assert imp.normalize_menu(data,{**CFG,'organization_id':org})['rows'][0]['price']==48000
+
+
 @pytest.mark.parametrize('url',['http://102922.selcdn.ru/a','https://127.0.0.1/a','https://evil.test/a',
     'https://102922.selcdn.ru.evil.test/a','https://user:pass@102922.selcdn.ru/a','https://102922.selcdn.ru:8000/a'])
 def test_image_source_restrictions(url):
