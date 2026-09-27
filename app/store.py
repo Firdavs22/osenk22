@@ -193,10 +193,12 @@ def notify_order(c, oid):
         return
     items = c.execute('SELECT * FROM order_items WHERE order_id=?', (oid,)).fetchall()
     summary = db.order_summary(order, items)
-    for admin in db.admin_ids():
-        source = {'telegram_app':'из мини-приложения Telegram','max_app':'из мини-приложения MAX'}.get(order['channel'],'с сайта')
+    recipients = db.admin_ids()
+    for admin in recipients:
+        source = {'telegram':'из Telegram','telegram_app':'из мини-приложения Telegram','max_app':'из мини-приложения MAX'}.get(order['channel'],'с сайта')
         db.enqueue(c, admin, 'Новый заказ ' + source + '!\n\n' + summary)
-    c.execute('UPDATE orders SET notified=1 WHERE id=?', (oid,))
+    if recipients:
+        c.execute('UPDATE orders SET notified=1 WHERE id=?', (oid,))
 
 
 @router.get('/order/{token}')
@@ -208,7 +210,12 @@ def order_result(request: Request, token: str):
             raise HTTPException(404)
         payment = c.execute('SELECT state,url,error FROM payments WHERE order_id=?', (order['id'],)).fetchone()
         items = c.execute('SELECT * FROM order_items WHERE order_id=?', (order['id'],)).fetchall()
-    return render(request, 'store_order.html', order=order, payment=payment, items=items)
+        subscribed = bool(c.execute('SELECT 1 FROM order_subscriptions WHERE order_id=?',(order['id'],)).fetchone())
+    from .order_updates import telegram_state
+    return render(request, 'store_order.html', order=order, payment=payment, items=items,
+                  subscribed=subscribed, telegram=telegram_state(), tracking={
+                      'status':order['status'],'payment_status':order['payment_status'],
+                      'payment_state':payment['state'] if payment else '', 'payment_ready':bool(payment and payment['url']), 'subscribed':subscribed})
 
 
 @router.get('/legal/{page}')

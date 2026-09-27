@@ -375,9 +375,11 @@ async def settings_save(request: Request):
 @app.get('/admin/notifications')
 def notification_page(request: Request):
     require_admin(request)
+    from .order_updates import telegram_state
     with db.connect() as c:
-        rows = c.execute('SELECT * FROM outbox WHERE sent!=1 ORDER BY id DESC LIMIT 100').fetchall()
-    return render(request, 'notifications.html', notifications=rows, page='notifications')
+        rows = c.execute('SELECT * FROM outbox ORDER BY id DESC LIMIT 100').fetchall()
+        missing = c.execute("SELECT count(*) FROM orders WHERE notified=0 AND status NOT IN ('cancelled','done') AND (payment_method<>'tbank' OR payment_status='paid')").fetchone()[0]
+    return render(request, 'notifications.html', notifications=rows, telegram=telegram_state(), missing=missing, page='notifications')
 
 
 @app.post('/admin/notifications/{nid:int}/retry')
@@ -414,3 +416,5 @@ app.include_router(content_router)
 app.include_router(menu_router)
 app.include_router(sync_router)
 app.include_router(max_router)
+from .order_updates import router as updates_router
+app.include_router(updates_router)

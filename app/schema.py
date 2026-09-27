@@ -10,6 +10,9 @@ DEFAULTS = {
 
 
 def migrate(c):
+    c.execute('''CREATE TABLE IF NOT EXISTS outbox(
+        id INTEGER PRIMARY KEY,chat_id INTEGER NOT NULL,text TEXT NOT NULL,
+        attempts INTEGER NOT NULL DEFAULT 0,next_try REAL NOT NULL DEFAULT 0,sent INTEGER NOT NULL DEFAULT 0)''')
     columns = {
         'products': {'tags': "TEXT NOT NULL DEFAULT ''", 'iiko_id': "TEXT NOT NULL DEFAULT ''", 'iiko_size': "TEXT NOT NULL DEFAULT ''", 'iiko_source': "TEXT NOT NULL DEFAULT ''"},
         'orders': {'channel': "TEXT NOT NULL DEFAULT 'telegram'", 'payment_method': "TEXT NOT NULL DEFAULT 'cash'",
@@ -18,6 +21,8 @@ def migrate(c):
                    'discount': 'INTEGER NOT NULL DEFAULT 0', 'district': "TEXT NOT NULL DEFAULT ''",
                    'legal_snapshot': "TEXT NOT NULL DEFAULT ''"},
         'order_items': {'product_id': 'INTEGER', 'iiko_id': "TEXT NOT NULL DEFAULT ''", 'iiko_size': "TEXT NOT NULL DEFAULT ''"},
+        'outbox': {'error': "TEXT NOT NULL DEFAULT ''", 'last_attempt': 'REAL NOT NULL DEFAULT 0',
+                   'subscription_order': 'INTEGER', 'subscription_bot': 'INTEGER'},
     }
     columns['products'].update({k: "TEXT NOT NULL DEFAULT ''" for k in ('allergens','nutrition','storage')})
     columns['products'].update({'iiko_available':'INTEGER NOT NULL DEFAULT 1',
@@ -52,6 +57,9 @@ def migrate(c):
         last_success TEXT NOT NULL DEFAULT '', result TEXT NOT NULL DEFAULT '', error TEXT NOT NULL DEFAULT '')""")
     c.execute('INSERT OR IGNORE INTO menu_sync(id) VALUES (1)')
     c.execute('CREATE TABLE IF NOT EXISTS telegram_screens(bot_id INTEGER NOT NULL,chat_id INTEGER NOT NULL,messages TEXT NOT NULL,PRIMARY KEY(bot_id,chat_id))')
+    c.execute("CREATE TABLE IF NOT EXISTS telegram_runtime(id INTEGER PRIMARY KEY CHECK(id=1),bot_id INTEGER NOT NULL,username TEXT NOT NULL,fingerprint TEXT NOT NULL,heartbeat REAL NOT NULL DEFAULT 0)")
+    c.execute('CREATE TABLE IF NOT EXISTS order_subscriptions(order_id INTEGER PRIMARY KEY REFERENCES orders(id),chat_id INTEGER NOT NULL,bot_id INTEGER NOT NULL)')
+    c.execute('CREATE TABLE IF NOT EXISTS order_subscription_tickets(token_hash TEXT PRIMARY KEY,order_id INTEGER NOT NULL REFERENCES orders(id),bot_id INTEGER NOT NULL,expires REAL NOT NULL)')
     c.execute("""CREATE TABLE IF NOT EXISTS max_events(
         id TEXT PRIMARY KEY,bot_key TEXT NOT NULL,payload TEXT NOT NULL,created REAL NOT NULL,
         state TEXT NOT NULL DEFAULT 'pending',attempts INTEGER NOT NULL DEFAULT 0,

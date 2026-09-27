@@ -226,6 +226,8 @@ async def check_telegram(request: Request):
     try:
         async with Bot(cfg.get('token') or config.BOT_TOKEN) as bot:
             me = await bot.get_me()
+        from .order_updates import record_bot
+        record_bot(me.id,me.username,cfg.get('token') or config.BOT_TOKEN)
         return redirect('/admin/integrations',ok=f'Подключён бот @{me.username}. Проверка getMe выполнена; сообщения не отправлялись.')
     except Exception:
         return redirect('/admin/integrations',error='Telegram не подтвердил токен')

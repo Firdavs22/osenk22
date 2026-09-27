@@ -254,8 +254,9 @@ def place_order(user, token):
         order = c.execute('SELECT * FROM orders WHERE id=?', (oid,)).fetchone()
         summary = order_summary(order, q['items'])
         enqueue(c, user, 'Спасибо! Заказ получен, ожидайте подтверждения магазина.\n\n' + summary)
-        for admin in admin_ids():
-            enqueue(c, admin, '🍣 Новый заказ!\n\n' + summary)
+        c.execute('UPDATE orders SET notified=0 WHERE id=?',(oid,))
+        from .store import notify_order
+        notify_order(c,oid)
         c.execute('DELETE FROM cart WHERE user_id=?', (user,))
         c.execute('DELETE FROM drafts WHERE user_id=?', (user,))
         return oid
@@ -273,6 +274,9 @@ def set_status(oid, status):
         c.execute('UPDATE orders SET status=? WHERE id=?', (status, oid))
         if order['channel'] == 'telegram':
             enqueue(c, order['user_id'], f'Заказ №{oid}: {STATUSES[status]}.')
+        else:
+            from .order_updates import queue_status
+            queue_status(c, dict(order) | {'status':status})
         if status == 'accepted':
             from .integrations import queue_iiko
             queue_iiko(c, oid)

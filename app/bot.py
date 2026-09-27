@@ -6,7 +6,7 @@ import time
 from contextlib import suppress
 
 from aiogram import Bot, Dispatcher, F
-from aiogram.exceptions import TelegramAPIError, TelegramForbiddenError, TelegramRetryAfter
+from aiogram.exceptions import TelegramAPIError, TelegramForbiddenError, TelegramRetryAfter, TelegramBadRequest
 from aiogram.filters import Command
 from aiogram.types import (BotCommand, CallbackQuery, FSInputFile, InlineKeyboardButton,
                            InlineKeyboardMarkup, KeyboardButton, Message,
@@ -90,12 +90,25 @@ async def show_info(message):
     await send(message, text, home_keyboard())
 
 
-@dp.message(Command('start', 'menu', 'cancel', 'id', 'orders', 'privacy'))
+@dp.message(Command('start', 'menu', 'cancel', 'id', 'orders', 'privacy', 'stopupdates'))
 async def commands(message: Message):
     if message.chat.type != 'private':
         return
     user = message.from_user.id
     command = message.text.split()[0].split('@')[0]
+    if command == '/stopupdates':
+        from .order_updates import unsubscribe_chat
+        unsubscribe_chat(message.chat.id,message.bot.id)
+        await screen(message,'Уведомления о заказах с сайта отключены. Для новой подписки откройте страницу нужного заказа.',home_keyboard())
+        return
+    if command == '/start' and len(message.text.split())==2 and message.text.split()[1].startswith('watch_'):
+        from .order_updates import subscribe
+        try:
+            text = subscribe(message.text.split()[1][6:],message.chat.id,message.bot.id)
+        except ValueError as exc:
+            text = str(exc)
+        await screen(message,text,home_keyboard())
+        return
     if command == '/id':
         await screen(message, f'Ваш Telegram ID: {user}')
         return
@@ -295,24 +308,48 @@ async def checkout_text(message: Message):
 
 
 async def deliver_once(bot):
+    from .order_updates import token_fingerprint
+    with db.connect(True) as c:
+        c.execute('UPDATE telegram_runtime SET heartbeat=? WHERE id=1 AND fingerprint=?',(time.time(),token_fingerprint(bot.token)))
+        from .store import notify_order
+        missing = c.execute("SELECT id FROM orders WHERE notified=0 AND status NOT IN ('cancelled','done') AND (payment_method<>'tbank' OR payment_status='paid') ORDER BY id LIMIT 50").fetchall()
+        for order in missing:
+            notify_order(c,order['id'])
     with db.connect() as c:
         rows = c.execute('SELECT * FROM outbox WHERE sent=0 AND next_try<=? ORDER BY id LIMIT 20', (time.time(),)).fetchall()
     for row in rows:
+        if row['subscription_order']:
+            with db.connect() as c:
+                valid = c.execute('SELECT 1 FROM order_subscriptions WHERE order_id=? AND chat_id=? AND bot_id=?',
+                                  (row['subscription_order'],row['chat_id'],bot.id)).fetchone()
+            if not valid or row['subscription_bot']!=bot.id:
+                with db.connect(True) as c:
+                    c.execute("UPDATE outbox SET sent=-1,error='Подписка отключена или изменился бот' WHERE id=?",(row['id'],))
+                continue
         state, delay = 0, min(3600, 2 ** min(row['attempts'] + 2, 12))
+        error = ''
         try:
             await bot.send_message(row['chat_id'], row['text'])
             state = 1
         except TelegramRetryAfter as exc:
             delay = exc.retry_after + 1
+            error = 'Telegram ограничил частоту. Повторим автоматически.'
         except TelegramForbiddenError:
             state = -1
+            error = 'Бот заблокирован или нет доступа к чату. Получателю нужно открыть бота и нажать /start.'
             log.warning('Notification %s blocked by recipient', row['id'])
+        except TelegramBadRequest:
+            state = -1
+            error = 'Telegram отклонил сообщение. Проверьте ID получателя и что он отправил этому боту /start.'
         except TelegramAPIError:
+            error = 'Ошибка связи с Telegram. Повторим автоматически; проверьте доступ сервера к api.telegram.org.'
             if row['attempts'] >= 11:
                 state = -1
+                error = 'Попытки отправки исчерпаны. Проверьте подключение Telegram и нажмите «Повторить».'
             log.warning('Notification %s failed; attempt %s', row['id'], row['attempts'] + 1)
         with db.connect(True) as c:
-            c.execute('UPDATE outbox SET sent=?,attempts=attempts+1,next_try=? WHERE id=?', (state, time.time() + delay, row['id']))
+            c.execute('UPDATE outbox SET sent=?,attempts=attempts+1,next_try=?,error=?,last_attempt=? WHERE id=?',
+                      (state, time.time() + delay,error,time.time(),row['id']))
 
 
 async def notification_loop(bot):
@@ -346,6 +383,9 @@ async def main():
         bot = Bot(token)
         tasks = []
         try:
+            from .order_updates import record_bot
+            me = await bot.get_me()
+            record_bot(me.id,me.username,token,heartbeat=True)
             await bot.delete_webhook(drop_pending_updates=False)
             url = app_url('telegram')
             await bot.set_chat_menu_button(menu_button=MenuButtonWebApp(text='Меню',web_app=WebAppInfo(url=url)) if url else MenuButtonCommands())
