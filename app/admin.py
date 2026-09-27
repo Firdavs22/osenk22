@@ -105,10 +105,10 @@ def csrf_token(request):
     return request.session['csrf']
 
 
-async def form_data(request, admin=True):
+async def form_data(request, admin=True, *, max_fields=30):
     if admin:
         require_admin(request)
-    form = await request.form(max_files=1, max_fields=30, max_part_size=MAX_BODY)
+    form = await request.form(max_files=1, max_fields=max_fields, max_part_size=MAX_BODY)
     expected = request.session.get('csrf')
     if not expected or not hmac.compare_digest(str(form.get('csrf', '')).encode(), expected.encode()):
         await form.close()

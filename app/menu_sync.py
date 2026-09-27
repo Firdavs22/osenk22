@@ -113,7 +113,8 @@ async def photos_retry(request: Request):
 @router.post('/admin/products/bulk')
 async def bulk_products(request: Request):
     from .admin import form_data, redirect
-    form = await form_data(request)
+    # One field per selected dish, plus CSRF and the clicked action button.
+    form = await form_data(request, max_fields=1002)
     try:
         action = str(form.get('action',''))
         if action not in ('publish','hide','publish_all'):
@@ -136,3 +137,5 @@ async def bulk_products(request: Request):
         return redirect('/admin/products',ok=f'Изменена публикация блюд: {changed}. Недоступны в iiko: {blocked}.')
     except ValueError as exc:
         return redirect('/admin/products',error=exc)
+    finally:
+        await form.close()

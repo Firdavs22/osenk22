@@ -1,8 +1,10 @@
 import asyncio
 import io
 import time
+from urllib.parse import urlencode
 
 import httpx
+import pytest
 from PIL import Image
 
 from app import db, config, menu_sync as sync, menu_import as imp
@@ -93,6 +95,39 @@ def test_bulk_csrf_visibility_and_auto_return(client):
     imp.apply_import(batch(menu()));assert imported()['active']==0
     imp.apply_import(batch(hidden));imp.apply_import(batch(menu()));assert imported()['active']==0
     assert 'Опубликовать выбранные' in client.get('/admin/products').text
+
+
+@pytest.mark.parametrize('encoding', ['urlencoded', 'multipart'])
+def test_bulk_full_menu_form_preserves_selection_and_availability(client, encoding):
+    csrf=login(client)
+    with db.connect(True) as c:
+        category=c.execute('SELECT id FROM categories LIMIT 1').fetchone()[0]
+        ids=[c.execute("INSERT INTO products(category_id,name,price,ingredients,active,iiko_available) VALUES (?,?,100,'Состав',0,?)",
+                       (category,f'Блюдо {i}',int(i!=999))).lastrowid for i in range(1000)]
+    def send(action, token=csrf, extra=()):
+        fields=[('csrf',token),('action',action)]+[('product_id',str(pid)) for pid in ids]+list(extra)
+        kwargs=({'content':urlencode(fields),'headers':{'Content-Type':'application/x-www-form-urlencoded'}}
+                if encoding=='urlencoded' else {'files':[(key,(None,value)) for key,value in fields]})
+        return client.post('/admin/products/bulk',follow_redirects=False,**kwargs)
+    assert send('publish','invalid').status_code==403
+    assert send('publish',extra=[('product_id','999999')]).status_code==400
+    assert all(not db.product(pid)['active'] for pid in ids)
+    assert send('publish').status_code==303
+    with db.connect() as c:
+        assert c.execute('SELECT count(*) FROM products WHERE id>=? AND active=1',(ids[0],)).fetchone()[0]==999
+    assert db.product(ids[-1])['active']==0  # Unavailable upstream stays hidden.
+    assert db.product(1)['active']==1  # Unselected manual dish is untouched.
+    assert send('hide').status_code==303
+    with db.connect() as c:
+        assert c.execute('SELECT count(*) FROM products WHERE id>=? AND active=1',(ids[0],)).fetchone()[0]==0
+    assert db.product(1)['active']==1
+
+
+def test_bulk_override_does_not_raise_other_form_limits(client):
+    csrf=login(client)
+    fields=[('csrf',csrf)]+[(f'field{i}','value') for i in range(30)]
+    response=client.post('/admin/products/1/toggle',files=[(key,(None,value)) for key,value in fields])
+    assert response.status_code==400 and db.product(1)['active']==1
 
 
 def test_settings_preserve_credentials_and_queue(client):
