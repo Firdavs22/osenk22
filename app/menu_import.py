@@ -6,11 +6,13 @@ import json
 import re
 import secrets
 import time
+from collections import Counter
 from decimal import Decimal, InvalidOperation
 from urllib.parse import urlsplit
 
 import httpx
 from fastapi import APIRouter, Request
+from fastapi.responses import JSONResponse
 from starlette.datastructures import UploadFile
 
 from . import config, db
@@ -40,7 +42,27 @@ def photo_allowed(url):
         return False
 
 
-def normalize_menu(menu, cfg):
+def optional_modifiers(groups):
+    """Only omit extras explicitly permitting zero, with no default selections."""
+    def optional(restriction):
+        return (isinstance(restriction, dict)
+                and restriction.get('minQuantity') == 0
+                and restriction.get('byDefault', 0) == 0)
+    for group in groups:
+        if not optional(group.get('restrictions')):
+            return False
+        for item in group.get('items') or []:
+            restrictions = item.get('restrictions')
+            if isinstance(restrictions, dict):
+                restrictions = [restrictions]
+            if group.get('childModifiersHaveMinMaxRestrictions') and not restrictions:
+                return False
+            if any(not optional(r) for r in restrictions or []):
+                return False
+    return True
+
+
+def normalize_menu(menu, cfg, allow_empty=False):
     if menu.get('formatVersion') != 2 or not isinstance(menu.get('itemCategories'),list):
         raise ValueError('iiko вернула неподдерживаемый формат меню. Нужен внешний каталог версии 2.')
     if str(menu.get('id')) != str(cfg['external_menu']):
@@ -60,8 +82,8 @@ def normalize_menu(menu, cfg):
                     raise ValueError('Нет UUID блюда')
                 if item.get('type','DISH') != 'DISH' or item.get('orderItemType','Product') != 'Product':
                     skipped.append(title + ': комбо или составное блюдо'); continue
-                if item.get('canSetOpenPrice') or item.get('isMarked') or item.get('canBeDivided'):
-                    skipped.append(title + ': открытая цена, маркировка или дробное количество не поддерживаются'); continue
+                if item.get('canSetOpenPrice') or item.get('isMarked'):
+                    skipped.append(title + ': открытая цена или маркировка не поддерживаются'); continue
                 if category.get('schedules') or category.get('scheduleId'):
                     skipped.append(title + ': категория с расписанием'); continue
                 sizes = item.get('itemSizes') or []
@@ -70,10 +92,13 @@ def normalize_menu(menu, cfg):
                 for size in sizes:
                     size_id = uuid_field(size.get('sizeId') or '')
                     identity = (product_id,size_id)
-                    if size.get('itemModifierGroups'):
-                        skipped.append(title + ': модификаторы требуют отдельной настройки')
+                    groups = size.get('itemModifierGroups') or []
+                    if groups and not optional_modifiers(groups):
+                        skipped.append(title + ': обязательные модификаторы, выбранные по умолчанию добавки или неизвестные ограничения')
                         continue
-                    prices = [p.get('price') for p in size.get('prices') or [] if cfg['organization_id'] in (p.get('organizations') or [])]
+                    if groups:
+                        skipped.append(title + ': импортируется базовое блюдо без необязательных добавок')
+                    prices = [p.get('price') for p in size.get('prices') or [] if cfg['organization_id'].lower() in [str(o).lower() for o in p.get('organizations') or []]]
                     if len(prices)!=1 or prices[0] is None:
                         skipped.append(title + ': нет однозначной цены выбранной организации')
                         continue
@@ -106,8 +131,9 @@ def normalize_menu(menu, cfg):
                 raise ValueError(f'{title or "Блюдо"}: {exc}') from None
     if len(rows)>1000:
         raise ValueError('Максимум 1000 размеров блюд за один импорт')
-    if not rows:
-        raise ValueError('Нет поддерживаемых позиций с ценой для выбранной организации')
+    if not rows and not allow_empty:
+        details = '; '.join(skipped[:5]) or 'Внешнее меню не содержит блюд в itemCategories'
+        raise ValueError('Нет поддерживаемых позиций с ценой для выбранной организации. ' + details)
     if menu.get('comboCategories'):
         skipped.append('Комбо-категории не импортируются')
     return {'name':str(menu.get('name') or ''),'source':source_key(cfg),'rows':rows,'skipped':skipped}
@@ -130,6 +156,48 @@ def prepare_preview(c, data):
         row['photo_supported'] = photo_allowed(row['photo_url'])
     data['hide_ids'] = [p['id'] for p in products if p['iiko_source']==data['source'] and p['id'] not in matched and p['active']]
     return data
+
+
+def diagnostic(menu, cfg):
+    """Allowlisted menu data only: no credentials, orders, tokens, or raw response."""
+    samples = []
+    counts = Counter()
+    for category in menu.get('itemCategories') or []:
+        for item in category.get('items') or []:
+            counts['items'] += 1
+            counts['type:' + str(item.get('type'))] += 1
+            counts['orderItemType:' + str(item.get('orderItemType'))] += 1
+            if len(samples) >= 30:
+                continue
+            sizes = []
+            for size in (item.get('itemSizes') or [])[:20]:
+                groups = []
+                for group in (size.get('itemModifierGroups') or [])[:20]:
+                    groups.append({'name':group.get('name'), 'optionalWithoutDefaults':optional_modifiers([group])})
+                sizes.append({'sizeId':size.get('sizeId'),'sizeName':size.get('sizeName'),
+                    'prices':[{'organizations':p.get('organizations'), 'price':p.get('price')} for p in (size.get('prices') or [])[:20]],
+                    'modifierGroups':groups})
+            samples.append({**{k:item.get(k) for k in ('itemId','name','type','orderItemType','canBeDivided','canSetOpenPrice','isMarked')},
+                            'category':category.get('name'),'categoryHasSchedule':bool(category.get('schedules') or category.get('scheduleId')),
+                            'sizes':sizes})
+    return {'selected':{k:cfg.get(k) for k in ('organization_id','external_menu','price_category')},
+            'formatVersion':menu.get('formatVersion'),'menuId':menu.get('id'),
+            'menuHasSchedule':bool(menu.get('intervals')), 'counts':dict(counts),'first30Items':samples}
+
+
+@router.post('/admin/integrations/iiko/menu-diagnostic')
+async def menu_diagnostic(request: Request):
+    from .admin import form_data, redirect
+    await form_data(request)
+    cfg = get_config('iiko')
+    try:
+        body = {'externalMenuId':cfg['external_menu'],'organizationIds':[cfg['organization_id']],'version':2}
+        if cfg.get('price_category'):
+            body['priceCategoryId'] = cfg['price_category']
+        menu = await iiko_call(cfg,'/api/2/menu/by_id',body)
+        return JSONResponse(diagnostic(menu,cfg),headers={'Content-Disposition':'attachment; filename="iiko-menu-diagnostic.json"'})
+    except Exception:
+        return redirect('/admin/integrations',error='Не удалось получить диагностику меню. Проверьте сохранённые доступы и ID меню.')
 
 
 def apply_import(token):
@@ -181,7 +249,9 @@ async def menu_preview(request: Request):
         if cfg.get('price_category'):
             body['priceCategoryId'] = cfg['price_category']
         menu = await iiko_call(cfg,'/api/2/menu/by_id',body)
-        data = normalize_menu(menu,cfg)
+        data = normalize_menu(menu,cfg,allow_empty=True)
+        if not data['rows']:
+            return render(request,'menu_preview.html',batch=data,import_token='',page='integrations')
         with db.connect(True) as c:
             data = prepare_preview(c,data)
             token = secrets.token_urlsafe(32)

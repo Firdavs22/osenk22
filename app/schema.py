@@ -4,6 +4,8 @@ DEFAULTS = {
     'tagline': 'Суши, роллы и маленькие поводы собраться', 'logo': '',
     'hero_mode': 'static', 'delivery_area': '', 'legal_name': '', 'legal_details': '',
     'privacy_text': '', 'offer_text': '',
+    'legal_email': '', 'legal_address': '', 'pickup_discount': '0', 'delivery_districts': '0',
+    'card_on_receipt': '0', 'delivery_time': '',
 }
 
 
@@ -12,9 +14,12 @@ def migrate(c):
         'products': {'tags': "TEXT NOT NULL DEFAULT ''", 'iiko_id': "TEXT NOT NULL DEFAULT ''", 'iiko_size': "TEXT NOT NULL DEFAULT ''", 'iiko_source': "TEXT NOT NULL DEFAULT ''"},
         'orders': {'channel': "TEXT NOT NULL DEFAULT 'telegram'", 'payment_method': "TEXT NOT NULL DEFAULT 'cash'",
                    'payment_status': "TEXT NOT NULL DEFAULT 'unpaid'", 'public_token': 'TEXT',
-                   'consent_at': "TEXT NOT NULL DEFAULT ''", 'notified': 'INTEGER NOT NULL DEFAULT 1'},
+                   'consent_at': "TEXT NOT NULL DEFAULT ''", 'notified': 'INTEGER NOT NULL DEFAULT 1',
+                   'discount': 'INTEGER NOT NULL DEFAULT 0', 'district': "TEXT NOT NULL DEFAULT ''",
+                   'legal_snapshot': "TEXT NOT NULL DEFAULT ''"},
         'order_items': {'product_id': 'INTEGER', 'iiko_id': "TEXT NOT NULL DEFAULT ''", 'iiko_size': "TEXT NOT NULL DEFAULT ''"},
     }
+    columns['products'].update({k: "TEXT NOT NULL DEFAULT ''" for k in ('allergens','nutrition','storage')})
     for table, fields in columns.items():
         existing = {row['name'] for row in c.execute(f'PRAGMA table_info({table})')}
         for name, definition in fields.items():

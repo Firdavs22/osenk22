@@ -47,13 +47,14 @@
   async function updateQuote() {
     const version = ++quoteVersion; quote = null; $('.checkout-submit').disabled = true;
     const method = $('#delivery-method').value;
+    if ($('#district-field')) { $('#district-field').hidden = method !== 'delivery'; form.elements.district.required = method === 'delivery'; }
     $('#address-field').hidden = method !== 'delivery'; form.elements.address.required = method === 'delivery';
     try {
-      const next = await api('/api/quote', {method});
+      const next = await api('/api/quote', {method, district: form.elements.district?.value || ''});
       if (version !== quoteVersion) return;
       quote = next; error.textContent = '';
       const summary = $('#quote-summary'); summary.replaceChildren();
-      for (const [label, value, total] of [['Товары', quote.subtotal], ['Доставка', quote.delivery], ['Итого', quote.total, true]]) {
+      for (const [label, value, total] of [['Товары', quote.subtotal], ...(quote.discount ? [['Скидка на самовывоз', -quote.discount]] : []), ['Доставка', quote.delivery], ['Итого', quote.total, true]]) {
         const line = element('div', undefined, 'quote-line' + (total ? ' total' : ''));
         line.append(element('span', label), element('span', money(value))); summary.append(line);
       }
@@ -81,6 +82,7 @@
     }
   });
   $('#delivery-method').addEventListener('change', updateQuote);
+  $('#delivery-district')?.addEventListener('change', updateQuote);
   form.addEventListener('submit', async event => {
     event.preventDefault(); if (!quote) { await updateQuote(); return; }
     $('.checkout-submit').disabled = true; error.textContent = '';

@@ -172,7 +172,7 @@ def quote(user, data, c=None):
         with connect() as conn:
             return quote(user, data, conn)
     s = settings(c)
-    items = cart(user, c)
+    items = [dict(p) for p in cart(user, c)]
     if s['orders_open'] != '1':
         raise ValueError('Приём заказов сейчас закрыт. Попробуйте в рабочее время.')
     if not items:
@@ -187,10 +187,25 @@ def quote(user, data, c=None):
         raise ValueError('Выберите способ получения')
     if method == 'delivery' and s['delivery_enabled'] != '1':
         raise ValueError('Доставка сейчас недоступна. Выберите самовывоз.')
+    district = ''
+    if method == 'delivery' and s.get('delivery_districts') == '1':
+        from .shop_policy import DISTRICTS
+        district = data.get('district', '')
+        if district not in DISTRICTS:
+            raise ValueError('Выберите район доставки. Для другого района или уточнения адреса позвоните ' + s['phone'] + ': стоимость нужно согласовать до заказа и оплаты.')
     free = int(s['free_delivery_from'])
     delivery = int(s['delivery_fee']) if method == 'delivery' and not (free > 0 and subtotal >= free) else 0
-    digest = hashlib.sha256(json.dumps([[dict(p) for p in items], s, method], sort_keys=True).encode()).hexdigest()
-    return {'items': items, 'subtotal': subtotal, 'delivery': delivery, 'total': subtotal + delivery,
+    percent = int(s.get('pickup_discount','0')) if method == 'pickup' else 0
+    if not 0 <= percent <= 50:
+        raise ValueError('Проверьте настройку скидки магазина')
+    for p in items:
+        p['price'] = max(1, (p['price'] * (100-percent) + 50)//100)
+    discount = subtotal - sum(p['price'] * p['quantity'] for p in items)
+    from .shop_policy import snapshot
+    legal_text, legal_hash = snapshot(s)
+    digest = hashlib.sha256(json.dumps([items, s, method, district, legal_hash], sort_keys=True).encode()).hexdigest()
+    return {'items': items, 'subtotal': subtotal, 'discount': discount, 'district': district,
+            'legal_snapshot': legal_text, 'delivery': delivery, 'total': subtotal - discount + delivery,
             'currency': s['currency'], 'fingerprint': digest}
 
 
@@ -198,11 +213,12 @@ def order_summary(order, items):
     currency = order['currency']
     lines = [f'Заказ №{order["id"]} · {STATUSES[order["status"]]}',
              *[f'{p["name"]} × {p["quantity"]} — {money(p["price"] * p["quantity"], currency)}' for p in items],
+             f'Скидка на самовывоз: {money(dict(order).get("discount",0), currency)}',
              f'Доставка: {money(order["delivery"], currency)}', f'Итого: {money(order["total"], currency)}',
              f'Имя: {order["customer"]}', f'Телефон: {order["phone"]}',
              'Получение: ' + ('Доставка' if order['method'] == 'delivery' else 'Самовывоз'),
              f'Адрес: {order["address"]}', f'Комментарий: {order["comment"] or "—"}',
-             'Оплата: ' + ('при получении' if dict(order).get('payment_method', 'cash') == 'cash' else dict(order).get('payment_status', 'pending'))]
+             'Оплата: ' + ({'cash':'наличными при получении','card':'картой при получении'}.get(dict(order).get('payment_method','cash'), dict(order).get('payment_status','pending')))]
     return '\n'.join(lines)
 
 
@@ -231,6 +247,8 @@ def place_order(user, token):
         cursor = c.execute('''INSERT INTO orders(token,user_id,customer,phone,method,address,comment,subtotal,delivery,total,currency)
             VALUES (?,?,?,?,?,?,?,?,?,?,?)''', (token, user, d['customer'], d['phone'], d['method'], d['address'], d.get('comment',''), q['subtotal'], q['delivery'], q['total'], q['currency']))
         oid = cursor.lastrowid
+        c.execute('UPDATE orders SET discount=?,district=?,legal_snapshot=?,consent_at=strftime(\'%Y-%m-%d %H:%M:%S\',\'now\') WHERE id=?',
+                  (q['discount'],q['district'],q['legal_snapshot'],oid))
         c.executemany('INSERT INTO order_items(order_id,name,price,quantity,product_id,iiko_id,iiko_size) VALUES (?,?,?,?,?,?,?)',
                       [(oid, p['name'], p['price'], p['quantity'], p['id'], p['iiko_id'], p['iiko_size']) for p in q['items']])
         order = c.execute('SELECT * FROM orders WHERE id=?', (oid,)).fetchone()
@@ -250,7 +268,7 @@ def set_status(oid, status):
             raise ValueError('Заказ не найден')
         if status not in TRANSITIONS[order['status']]:
             raise ValueError('Недопустимый переход статуса. Обновите страницу.')
-        if status != 'cancelled' and order['payment_method'] != 'cash' and order['payment_status'] != 'paid':
+        if status != 'cancelled' and order['payment_method'] == 'tbank' and order['payment_status'] != 'paid':
             raise ValueError('Онлайн-оплата ещё не подтверждена банком')
         c.execute('UPDATE orders SET status=? WHERE id=?', (status, oid))
         if order['channel'] == 'telegram':

@@ -167,7 +167,7 @@ async def callbacks(call: CallbackQuery):
         elif action == 'checkout':
             db.quote(user, {'method': 'pickup'})
             db.save_draft(user, 'method', {})
-            rows = [[('Заберу сам', 'method:pickup')]]
+            rows = [[('Самовывоз', 'method:pickup')]]
             if db.settings()['delivery_enabled'] == '1':
                 rows.insert(0, [('Доставка', 'method:delivery')])
             rows.append([('Отмена', 'cancel')])
@@ -177,9 +177,27 @@ async def callbacks(call: CallbackQuery):
             if step != 'method':
                 raise ValueError('Начните оформление через корзину')
             data['method'] = action.split(':')[1]
+            if data['method'] == 'delivery' and db.settings().get('delivery_districts') == '1':
+                from .shop_policy import DISTRICTS
+                db.save_draft(user, 'district', data)
+                await message.answer('Выберите район. Для доставки за пределы этих районов заранее согласуйте стоимость по телефону ' + db.settings()['phone'],
+                    reply_markup=keyboard([[(name, 'district:'+str(i))] for i,name in enumerate(DISTRICTS)] + [[('Отмена','cancel')]]))
+                return
             db.quote(user, data)
             db.save_draft(user, 'customer', data)
             await message.answer('Как к вам обращаться? Напишите имя.\nДля отмены — /cancel', reply_markup=ReplyKeyboardRemove())
+        elif action.startswith('district:'):
+            from .shop_policy import DISTRICTS
+            step, data = db.draft(user)
+            if step != 'district':
+                raise ValueError('Начните оформление через корзину')
+            index = int(action.split(':')[1])
+            if not 0 <= index < len(DISTRICTS):
+                raise ValueError('Выберите район кнопкой')
+            data['district'] = DISTRICTS[index]
+            db.quote(user,data)
+            db.save_draft(user,'customer',data)
+            await message.answer('Как к вам обращаться? Напишите имя.',reply_markup=ReplyKeyboardRemove())
         elif action == 'skip':
             step, data = db.draft(user)
             if step != 'comment':
@@ -208,7 +226,7 @@ async def confirm_preview(message, user, data):
     q = db.quote(user, data)
     data.update(token=secrets.token_hex(12), fingerprint=q['fingerprint'])
     db.save_draft(user, 'confirm', data)
-    summary = dict(data, id='на подтверждении', status='new', delivery=q['delivery'], total=q['total'], currency=q['currency'])
+    summary = dict(data, id='на подтверждении', status='new', discount=q['discount'], delivery=q['delivery'], total=q['total'], currency=q['currency'])
     text = db.order_summary(summary, q['items'])
     text += '\n\nПроверьте данные. Подтверждая заказ, вы передаёте магазину указанные контакты для его выполнения. /privacy'
     await send(message, text, keyboard([[('✅ Подтвердить заказ', f'confirm:{data["token"]}')], [('Отмена', 'cancel')]]))
@@ -255,6 +273,8 @@ async def checkout_text(message: Message):
             await confirm_preview(message, user, data)
         elif step == 'confirm':
             await message.answer('Подтвердите заказ кнопкой в сообщении выше или нажмите /cancel.')
+        elif step == 'district':
+            await message.answer('Выберите район кнопкой выше или нажмите /cancel.')
         elif step == 'method':
             await message.answer('Выберите доставку или самовывоз кнопкой выше.')
         else:

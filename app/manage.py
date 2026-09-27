@@ -72,10 +72,14 @@ def backup(output=None):
 
 def main():
     parser = argparse.ArgumentParser(description='Управление магазином суши')
-    parser.add_argument('command', choices=['setup', 'init', 'seed', 'password', 'secret', 'backup', 'check'])
+    parser.add_argument('command', choices=['setup', 'init', 'seed', 'password', 'secret', 'backup', 'check', 'shop-profile'])
     parser.add_argument('--output', help='Папка для резервных копий')
     args = parser.parse_args()
-    if args.command == 'setup':
+    if args.command == 'shop-profile':
+        from .shop_policy import apply_profile
+        apply_profile()
+        print('Условия магазина обновлены: самовывоз −10%, доставка 300 ₽ / бесплатно от 1400 ₽, районы, контакты и реквизиты. Проверьте их в админке. Приём заказов и интеграции не включались.')
+    elif args.command == 'setup':
         setup()
     elif args.command == 'init':
         db.init()

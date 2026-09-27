@@ -240,6 +240,7 @@ async def save_product(request: Request):
         description = field(form, 'description', 1000, False)
         weight = field(form, 'weight', 60, False)
         tags = ', '.join(dict.fromkeys(t.strip() for t in field(form, 'tags', 160, False).split(',') if t.strip()))
+        food_info = tuple(field(form,k,1000,False) for k in ('allergens','nutrition','storage'))
         from .integrations import uuid_field
         iiko_id = uuid_field(field(form, 'iiko_id', 36, False))
         iiko_size = uuid_field(field(form, 'iiko_size', 36, False))
@@ -260,7 +261,8 @@ async def save_product(request: Request):
                 if filename or form.get('remove_photo') == 'on':
                     c.execute('DELETE FROM menu_images WHERE product_id=?', (pid,))
             else:
-                c.execute('INSERT INTO products(category_id,name,description,ingredients,weight,price,photo,active,tags,iiko_id,iiko_size) VALUES (?,?,?,?,?,?,?,?,?,?,?)', values)
+                pid = c.execute('INSERT INTO products(category_id,name,description,ingredients,weight,price,photo,active,tags,iiko_id,iiko_size) VALUES (?,?,?,?,?,?,?,?,?,?,?)', values).lastrowid
+            c.execute('UPDATE products SET allergens=?,nutrition=?,storage=? WHERE id=?', (*food_info,pid))
         return redirect('/admin/products', ok='Товар сохранён')
     except (ValueError, sqlite3.IntegrityError) as exc:
         if filename:
@@ -341,6 +343,13 @@ async def settings_save(request: Request):
             ('address', 400, True), ('hours', 300, True)]}
         values.update({k: str(db.parse_money(form.get(k))) for k in ('delivery_fee', 'free_delivery_from', 'minimum_order')})
         values.update({k: '1' if form.get(k) == 'on' else '0' for k in ('orders_open', 'delivery_enabled')})
+        for k in ('card_on_receipt','delivery_districts'):
+            values[k] = '1' if form.get(k) == 'on' else '0'
+        percent = int(form.get('pickup_discount') or 0)
+        if not 0 <= percent <= 50:
+            raise ValueError('Скидка должна быть от 0 до 50%')
+        values['pickup_discount'] = str(percent)
+        values['delivery_time'] = field(form,'delivery_time',100,False)
         with db.connect(True) as c:
             c.executemany('UPDATE settings SET value=? WHERE key=?', [(v, k) for k, v in values.items()])
         return redirect('/admin/settings', ok='Настройки сохранены')

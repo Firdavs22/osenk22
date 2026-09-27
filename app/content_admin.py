@@ -29,6 +29,10 @@ async def save_appearance(request: Request):
     try:
         values = {k: field(form,k,n,False) for k,n in [('tagline',160),('delivery_area',500),('legal_name',200),('legal_details',2000),('privacy_text',15000),('offer_text',15000)]}
         values['shop_name'] = field(form,'shop_name',80)
+        values['legal_email'] = field(form,'legal_email',254,False)
+        values['legal_address'] = field(form,'legal_address',600,False)
+        if values['legal_email'] and not re.fullmatch(r'[^\s@]+@[^\s@]+\.[^\s@]+', values['legal_email']):
+            raise ValueError('Проверьте email для обращений')
         mode = field(form,'hero_mode',10)
         if mode not in ('static','carousel'):
             raise ValueError('Выберите тип первого экрана')

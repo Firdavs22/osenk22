@@ -60,10 +60,11 @@ def storefront(request: Request):
         slides = c.execute('SELECT * FROM slides WHERE active=1 ORDER BY position,id').fetchall()
     products = [dict(p) for p in db.products(active=True)]
     # Only customer-facing catalog fields cross the public boundary.
-    public = [{k: p[k] for k in ('id', 'name', 'description', 'ingredients', 'weight', 'price', 'photo', 'category_id', 'tags')} for p in products]
+    public = [{k: p[k] for k in ('id', 'name', 'description', 'ingredients', 'weight', 'price', 'photo', 'category_id', 'tags', 'allergens', 'nutrition', 'storage')} for p in products]
+    from .shop_policy import DISTRICTS
     return render(request, 'store.html', products=public, categories=db.categories(), slides=slides,
                   tags=list(dict.fromkeys(t.strip() for p in products for t in p['tags'].split(',') if t.strip())),
-                  online=payment_enabled(), cart=cart_state(visitor(request)))
+                  online=payment_enabled(), districts=DISTRICTS, cart=cart_state(visitor(request)))
 
 
 @router.get('/assets/{filename}')
@@ -108,7 +109,7 @@ async def quote_cart(request: Request):
         q = db.quote(user, data)
         # An opaque checkout key identifies one purchase, even across retries/network loss.
         key = request.session.setdefault('checkout_key', secrets.token_urlsafe(24))
-        return {k: v for k, v in q.items() if k != 'items'} | {'key': key}
+        return {k: v for k, v in q.items() if k not in ('items','legal_snapshot')} | {'key': key}
     except ValueError as exc:
         return JSONResponse({'detail': str(exc)}, 400)
 
@@ -116,7 +117,8 @@ async def quote_cart(request: Request):
 def contact(data, name, minimum, maximum):
     value = str(data.get(name, '')).strip()
     if not minimum <= len(value) <= maximum:
-        raise ValueError(f'Заполните поле «{name}» ({minimum}–{maximum} символов)')
+        label = {'customer':'Имя','phone':'Телефон','address':'Адрес доставки','comment':'Комментарий'}.get(name,name)
+        raise ValueError(f'Заполните поле «{label}» ({minimum}–{maximum} символов)')
     return value
 
 
@@ -146,7 +148,8 @@ async def checkout(request: Request):
             raise ValueError('Подтвердите согласие с условиями заказа')
         method = data.get('method')
         payment = data.get('payment', 'cash')
-        if payment not in ('cash', 'tbank') or (payment == 'tbank' and not payment_enabled()):
+        if (payment not in ('cash', 'card', 'tbank') or (payment == 'tbank' and not payment_enabled())
+                or (payment == 'card' and db.settings().get('card_on_receipt') != '1')):
             raise ValueError('Выбранный способ оплаты недоступен')
         address = contact(data, 'address', 10, 400) if method == 'delivery' else db.settings()['address']
         with db.connect(True) as c:
@@ -161,6 +164,8 @@ async def checkout(request: Request):
             oid = c.execute("""INSERT INTO orders(token,user_id,customer,phone,method,address,comment,subtotal,delivery,total,currency,channel,payment_method,payment_status,public_token,consent_at,notified)
                 VALUES (?,?,?,?,?,?,?,?,?,?,?,'web',?,?,?,strftime('%Y-%m-%d %H:%M:%S','now'),0)""",
                 (key,user,customer,phone,method,address,comment,q['subtotal'],q['delivery'],q['total'],q['currency'],payment,'pending' if payment=='tbank' else 'unpaid',public_token)).lastrowid
+            c.execute('UPDATE orders SET discount=?,district=?,legal_snapshot=? WHERE id=?',
+                      (q['discount'],q['district'],q['legal_snapshot'],oid))
             c.executemany('INSERT INTO order_items(order_id,name,price,quantity,product_id,iiko_id,iiko_size) VALUES (?,?,?,?,?,?,?)',
                           [(oid,p['name'],p['price'],p['quantity'],p['id'],p['iiko_id'],p['iiko_size']) for p in q['items']])
             if payment == 'tbank':
@@ -200,6 +205,7 @@ def order_result(request: Request, token: str):
 @router.get('/legal/{page}')
 def legal(request: Request, page: str):
     from .admin import render
-    if page not in ('privacy', 'offer'):
+    from .shop_policy import documents
+    if page not in ('privacy', 'offer', 'delivery', 'returns', 'contacts'):
         raise HTTPException(404)
-    return render(request, 'legal.html', legal_page=page)
+    return render(request, 'legal.html', legal_page=page, legal_text=documents(db.settings())[page])
