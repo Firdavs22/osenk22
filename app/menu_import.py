@@ -8,6 +8,7 @@ import secrets
 import time
 from collections import Counter
 from decimal import Decimal, InvalidOperation
+from pathlib import Path
 from urllib.parse import urlsplit
 
 import httpx
@@ -20,6 +21,59 @@ from .integrations import iiko_call, uuid_field
 from .vault import get_config
 
 router = APIRouter()
+
+
+def menu_failure(exc, cfg, stage):
+    """Share failure metadata, never response bodies, credentials or exception text."""
+    report = {'stage':stage, 'exceptionType':type(exc).__name__}
+    locations = []
+    trace = exc.__traceback__
+    while trace:
+        file = Path(trace.tb_frame.f_code.co_filename)
+        if file.parent == Path(__file__).parent:
+            locations.append({'file':file.name, 'line':trace.tb_lineno,
+                              'function':trace.tb_frame.f_code.co_name})
+        trace = trace.tb_next
+    report['locations'] = locations[-6:]
+    if isinstance(exc, httpx.HTTPStatusError):
+        report['httpStatus'] = exc.response.status_code
+        path = exc.request.url.path
+        report['stage'] = 'authorization' if path == '/api/v2/access_token' else stage
+        try:
+            payload = exc.response.json()
+        except ValueError:
+            payload = {}
+        if isinstance(payload, dict):
+            code = payload.get('errorCode') or payload.get('code')
+            secrets_in_config = [str(cfg[k]) for k in ('api_key','client_secret','app_id') if cfg.get(k)]
+            if isinstance(code, str) and re.fullmatch(r'[A-Z][A-Z0-9_]{0,79}', code) and not any(s in code for s in secrets_in_config):
+                report['errorCode'] = code
+            try:
+                correlation = uuid_field(payload.get('correlationId') or '')
+                if correlation and correlation not in secrets_in_config:
+                    report['correlationId'] = correlation
+            except (ValueError, TypeError, AttributeError):
+                pass
+        hint = {
+            400:'iiko отклонила параметры запроса. Проверьте ID меню, организацию и ценовую категорию.',
+            401:'iiko отклонила авторизацию.',
+            403:'iiko запретила доступ к запрошенным данным.',
+            404:'Запрошенные данные или метод iiko не найдены.',
+            429:'Превышен лимит запросов iiko. Повторите позже.',
+        }.get(exc.response.status_code, 'iiko вернула ошибку HTTP.')
+        label = 'авторизация' if report['stage'] == 'authorization' else 'загрузка меню'
+        message = f"{hint} HTTP {report['httpStatus']}. Этап: {label}."
+        if report.get('errorCode'):
+            message += f" Код iiko: {report['errorCode']}."
+    elif isinstance(exc, httpx.TimeoutException):
+        message = 'Не дождались ответа iiko. Повторите позже.'
+    elif isinstance(exc, httpx.RequestError):
+        message = 'VPS не смог выполнить сетевой запрос к iiko.'
+    else:
+        label = {'menu_request':'загрузка меню', 'menu_processing':'обработка ответа iiko',
+                 'catalog_preview':'подготовка каталога'}.get(stage, 'проверка меню')
+        message = f"Ошибка на этапе «{label}»: {report['exceptionType']}."
+    return report, message + ' Каталог не изменён. Скачайте диагностику меню для разбора ошибки.'
 
 
 def source_key(cfg):
@@ -213,17 +267,27 @@ def diagnostic(menu, cfg):
 
 @router.post('/admin/integrations/iiko/menu-diagnostic')
 async def menu_diagnostic(request: Request):
-    from .admin import form_data, redirect
+    from .admin import form_data
     await form_data(request)
     cfg = get_config('iiko')
+    stage = 'menu_request'
     try:
         body = {'externalMenuId':cfg['external_menu'],'organizationIds':[cfg['organization_id']],'version':2}
         if cfg.get('price_category'):
             body['priceCategoryId'] = cfg['price_category']
         menu = await iiko_call(cfg,'/api/2/menu/by_id',body)
-        return JSONResponse(diagnostic(menu,cfg),headers={'Content-Disposition':'attachment; filename="iiko-menu-diagnostic.json"'})
-    except Exception:
-        return redirect('/admin/integrations',error='Не удалось получить диагностику меню. Проверьте сохранённые доступы и ID меню.')
+        stage = 'menu_processing'
+        result = diagnostic(menu,cfg)
+        try:
+            normalized = normalize_menu(menu,cfg,allow_empty=True)
+            result['preview'] = {'importable':len(normalized['rows']), 'remarks':normalized['skipped']}
+        except Exception as exc:
+            result['failure'], _ = menu_failure(exc,cfg,stage)
+    except Exception as exc:
+        failure, _ = menu_failure(exc,cfg,stage)
+        result = {'selected':{k:cfg.get(k) for k in ('organization_id','external_menu','price_category')},
+                  'failure':failure}
+    return JSONResponse(result,headers={'Content-Disposition':'attachment; filename="iiko-menu-diagnostic.json"'})
 
 
 def apply_import(token):
@@ -268,6 +332,7 @@ async def menu_preview(request: Request):
     from .admin import form_data,render,redirect
     await form_data(request)
     cfg = get_config('iiko')
+    stage = 'menu_request'
     try:
         if not all(cfg.get(k) for k in ('api_key','app_id','client_secret','organization_id','external_menu')):
             raise ValueError('Сохраните API key, appId, clientSecret, организацию и ID внешнего меню')
@@ -275,9 +340,11 @@ async def menu_preview(request: Request):
         if cfg.get('price_category'):
             body['priceCategoryId'] = cfg['price_category']
         menu = await iiko_call(cfg,'/api/2/menu/by_id',body)
+        stage = 'menu_processing'
         data = normalize_menu(menu,cfg,allow_empty=True)
         if not data['rows']:
             return render(request,'menu_preview.html',batch=data,import_token='',page='integrations')
+        stage = 'catalog_preview'
         with db.connect(True) as c:
             data = prepare_preview(c,data)
             token = secrets.token_urlsafe(32)
@@ -287,8 +354,9 @@ async def menu_preview(request: Request):
         return render(request,'menu_preview.html',batch=data,import_token=token,page='integrations')
     except ValueError as exc:
         return redirect('/admin/integrations',error=exc)
-    except Exception:
-        return redirect('/admin/integrations',error='Не удалось загрузить внешнее меню. Проверьте доступы и ID меню. Каталог не изменён.')
+    except Exception as exc:
+        _, message = menu_failure(exc,cfg,stage)
+        return redirect('/admin/integrations',error=message)
 
 
 @router.post('/admin/integrations/iiko/menu-apply')

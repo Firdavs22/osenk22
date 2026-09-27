@@ -7,6 +7,7 @@ import secrets
 import time
 
 import pytest
+import httpx
 from PIL import Image
 
 from app import config, db, menu_import as imp
@@ -162,6 +163,69 @@ def test_both_price_shapes_match_uuid_case_insensitively():
                   {'organizationId':org,'organizations':[org.upper()],'price':480}):
         data['itemCategories'][0]['items'][0]['itemSizes'][0]['prices']=[price]
         assert imp.normalize_menu(data,{**CFG,'organization_id':org})['rows'][0]['price']==48000
+
+
+@pytest.mark.parametrize('status,path,stage',[
+    (400,'/api/2/menu/by_id','menu_request'),
+    (401,'/api/v2/access_token','authorization'),
+    (403,'/api/2/menu/by_id','menu_request'),
+    (429,'/api/2/menu/by_id','menu_request'),
+    (503,'/api/2/menu/by_id','menu_request'),
+])
+def test_menu_http_failure_shown_and_downloadable_without_secrets(client,monkeypatch,status,path,stage):
+    csrf=login(client);set_config('iiko',CFG)
+    request=httpx.Request('POST','https://api-ru.iiko.services'+path,
+                         headers={'Authorization':'Bearer private-token'},json={'clientSecret':CFG['client_secret']})
+    response=httpx.Response(status,request=request,json={
+        'errorCode':'EXTERNAL_MENU_DATA_MISSED','correlationId':SIZE,
+        'errorDescription':'private-token '+CFG['client_secret'],
+        'request':{'apiKey':CFG['api_key']}})
+    async def api(*args,**kwargs):response.raise_for_status()
+    monkeypatch.setattr(imp,'iiko_call',api)
+    before=[dict(p) for p in db.products()]
+    page=client.post('/admin/integrations/iiko/menu-preview',data={'csrf':csrf})
+    assert f'HTTP {status}' in page.text and 'EXTERNAL_MENU_DATA_MISSED' in page.text
+    report=client.post('/admin/integrations/iiko/menu-diagnostic',data={'csrf':csrf})
+    assert 'attachment' in report.headers['content-disposition']
+    failure=report.json()['failure']
+    assert failure['stage']==stage and failure['httpStatus']==status and failure['correlationId']==SIZE
+    for output in (page.text,report.text):
+        assert 'private-token' not in output and CFG['client_secret'] not in output
+        assert 'errorDescription' not in output and 'Authorization' not in output
+    assert [dict(p) for p in db.products()]==before
+
+
+@pytest.mark.parametrize('exception,marker',[
+    (httpx.ReadTimeout('private-secret'), 'Не дождались'),
+    (httpx.ConnectError('private-secret'), 'сетевой запрос'),
+    (AttributeError('private-secret'), 'AttributeError'),
+])
+def test_menu_transport_and_processing_failure(client,monkeypatch,exception,marker):
+    csrf=login(client);set_config('iiko',CFG)
+    async def api(*args,**kwargs):
+        if isinstance(exception,httpx.RequestError):raise exception
+        return menu()
+    monkeypatch.setattr(imp,'iiko_call',api)
+    if not isinstance(exception,httpx.RequestError):
+        def broken(*args,**kwargs):raise exception
+        monkeypatch.setattr(imp,'normalize_menu',broken)
+    page=client.post('/admin/integrations/iiko/menu-preview',data={'csrf':csrf})
+    assert marker in page.text and 'private-secret' not in page.text
+    report=client.post('/admin/integrations/iiko/menu-diagnostic',data={'csrf':csrf})
+    assert report.json()['failure']['exceptionType']==type(exception).__name__
+    expected='menu_request' if isinstance(exception,httpx.RequestError) else 'menu_processing'
+    assert report.json()['failure']['stage']==expected
+    assert 'private-secret' not in report.text
+
+
+def test_menu_error_metadata_rejects_sensitive_or_malformed_fields():
+    request=httpx.Request('POST','https://api-ru.iiko.services/api/2/menu/by_id')
+    response=httpx.Response(400,request=request,json={'errorCode':'SECRET_API_KEY','correlationId':'not-a-uuid',
+                                                   'message':'do not print'})
+    error=httpx.HTTPStatusError('do not print',request=request,response=response)
+    report,message=imp.menu_failure(error,{'api_key':'SECRET_API_KEY'},'menu_request')
+    assert 'errorCode' not in report and 'correlationId' not in report
+    assert 'do not print' not in message
 
 
 @pytest.mark.parametrize('url',['http://102922.selcdn.ru/a','https://127.0.0.1/a','https://evil.test/a',
