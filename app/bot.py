@@ -15,6 +15,7 @@ from aiogram.types import (BotCommand, CallbackQuery, FSInputFile, InlineKeyboar
 from . import config, db
 from .chat_screen import screen
 from .mini_apps import app_url
+from . import customer_accounts as accounts
 
 log = logging.getLogger(__name__)
 dp = Dispatcher()
@@ -28,7 +29,8 @@ def keyboard(rows):
 
 def home_keyboard():
     markup = keyboard([[('🍣 Меню в чате', 'menu'), ('🛒 Корзина чата', 'cart')],
-                       [('📦 Заказы в чате', 'orders'), ('📍 О магазине', 'info')]])
+                       [('📦 Мои заказы', 'orders'), ('👤 Личный кабинет', 'account')],
+                       [('📍 О магазине', 'info')]])
     url = app_url('telegram')
     if url:
         markup.inline_keyboard.insert(0,[InlineKeyboardButton(text='🍣 Открыть меню с фото',web_app=WebAppInfo(url=url))])
@@ -66,14 +68,26 @@ async def show_cart(message, user):
     await send(message, text, keyboard(rows))
 
 
-async def show_orders(message, user):
-    with db.connect() as c:
-        orders = c.execute('SELECT * FROM orders WHERE user_id=? ORDER BY id DESC LIMIT 5', (user,)).fetchall()
-        details = [(o, c.execute('SELECT * FROM order_items WHERE order_id=?', (o['id'],)).fetchall()) for o in orders]
-    if not orders:
-        await screen(message, 'У вас ещё нет заказов.', reply_markup=home_keyboard())
-    else:
-        await send(message, '\n\n────────\n\n'.join(db.order_summary(order, items) for order, items in details), home_keyboard())
+async def show_orders(message, user, before=0):
+    texts, cursor, linked = accounts.history('telegram', message.bot.id, user, before)
+    if not texts:
+        await screen(message, 'Заказов пока нет.' if linked else 'Для заказов с сайта подтвердите свой номер в личном кабинете.', home_keyboard())
+        return
+    # Receipts/history are deliberately never registered in telegram_screens.
+    for text in texts:
+        for offset in range(0,len(text),3500):
+            await message.answer(text[offset:offset+3500])
+    rows = [[('Ещё заказы →', f'orders:{cursor}')]] if cursor else []
+    rows += [[('👤 Личный кабинет', 'account'), ('Меню', 'menu')]]
+    await message.answer('История сохранена в чате. /orders — актуальные статусы.', reply_markup=keyboard(rows))
+
+
+async def show_account(message, user):
+    db.save_draft(user,None,{})
+    accounts.begin_contact('telegram', message.bot.id, user, message.chat.id)
+    await screen(message, accounts.CONTACT_PROMPT, ReplyKeyboardMarkup(
+        keyboard=[[KeyboardButton(text='Поделиться своим номером',request_contact=True)]],
+        resize_keyboard=True,one_time_keyboard=True))
 
 
 async def show_info(message):
@@ -90,16 +104,21 @@ async def show_info(message):
     await send(message, text, home_keyboard())
 
 
-@dp.message(Command('start', 'menu', 'cancel', 'id', 'orders', 'privacy', 'stopupdates'))
+@dp.message(Command('start', 'menu', 'cancel', 'id', 'orders', 'privacy', 'stopupdates', 'account', 'logout'))
 async def commands(message: Message):
     if message.chat.type != 'private':
         return
     user = message.from_user.id
     command = message.text.split()[0].split('@')[0]
-    if command == '/stopupdates':
+    if command in ('/stopupdates','/logout'):
         from .order_updates import unsubscribe_chat
         unsubscribe_chat(message.chat.id,message.bot.id)
-        await screen(message,'Уведомления о заказах с сайта отключены. Для новой подписки откройте страницу нужного заказа.',home_keyboard())
+        accounts.stop('telegram',message.bot.id,user,logout=command=='/logout')
+        await screen(message, 'Вы вышли из личного кабинета. Заказы и сообщения в чате сохранены.' if command=='/logout'
+                     else 'Уведомления личного кабинета отключены. История доступна через /orders. Включить снова: /account.', ReplyKeyboardRemove())
+        return
+    if command == '/account' or (command=='/start' and message.text.split()[1:]==['account']):
+        await show_account(message,user)
         return
     if command == '/start' and len(message.text.split())==2 and message.text.split()[1].startswith('watch_'):
         from .order_updates import subscribe
@@ -121,6 +140,7 @@ async def commands(message: Message):
                              'По вопросам использования и удаления данных обратитесь в магазин: ' +
                              (db.settings()['phone'] or 'контакт указан в разделе «О магазине».'))
         return
+    accounts.cancel_contact('telegram',message.bot.id,user)
     db.save_draft(user, None, {})
     await screen(message, 'Оформление отменено. Корзина сохранена.' if command == '/cancel' else
                          f'Добро пожаловать в {db.settings()["shop_name"]}! 🍣\nВыберите блюда — мы приготовим ваш заказ.',
@@ -136,6 +156,8 @@ async def callbacks(call: CallbackQuery):
     await call.answer()
     user, message = call.from_user.id, call.message
     action = call.data or ''
+    if action!='account':
+        accounts.cancel_contact('telegram',message.bot.id,user)
     try:
         if action == 'menu':
             db.save_draft(user, None, {})
@@ -182,6 +204,10 @@ async def callbacks(call: CallbackQuery):
             await show_info(message)
         elif action == 'orders':
             await show_orders(message, user)
+        elif action.startswith('orders:'):
+            await show_orders(message, user, max(0,int(action.split(':')[1])))
+        elif action == 'account':
+            await show_account(message,user)
         elif action == 'checkout':
             db.quote(user, {'method': 'pickup'})
             db.save_draft(user, 'method', {})
@@ -253,6 +279,19 @@ async def confirm_preview(message, user, data):
 @dp.message(F.chat.type == 'private')
 async def checkout_text(message: Message):
     user = message.from_user.id
+    if accounts.waiting_contact('telegram',message.bot.id,user,message.chat.id):
+        contact = message.contact
+        if not contact or contact.user_id!=user or message.forward_origin:
+            await screen(message,'Для входа нужен ваш контакт через кнопку, а не введённый номер. /account — показать кнопку, /cancel — отменить.')
+            return
+        try:
+            accounts.verify_contact('telegram',message.bot.id,user,message.chat.id,contact.phone_number)
+        except ValueError as exc:
+            await screen(message,str(exc))
+            return
+        await screen(message,'Номер подтверждён. Уведомления включены. Новые заказы с этим телефоном появятся здесь автоматически.',ReplyKeyboardRemove())
+        await show_orders(message,user)
+        return
     step, data = db.draft(user)
     text = (message.text or '').strip()
     try:
@@ -308,6 +347,7 @@ async def checkout_text(message: Message):
 
 
 async def deliver_once(bot):
+    await deliver_customer_once(bot)
     from .order_updates import token_fingerprint
     with db.connect(True) as c:
         c.execute('UPDATE telegram_runtime SET heartbeat=? WHERE id=1 AND fingerprint=?',(time.time(),token_fingerprint(bot.token)))
@@ -352,6 +392,22 @@ async def deliver_once(bot):
                       (state, time.time() + delay,error,time.time(),row['id']))
 
 
+async def deliver_customer_once(bot):
+    row = accounts.claim('telegram',bot.id)
+    if not row:
+        return
+    state,error,delay = 1,'',30
+    try:
+        await bot.send_message(row['chat_id'],row['text'])
+    except TelegramRetryAfter as exc:
+        state,error,delay = 0,'Ограничение частоты Telegram. Повторим автоматически.',exc.retry_after+1
+    except (TelegramForbiddenError,TelegramBadRequest):
+        state,error = -1,'Нет доступа к чату. Покупателю нужно открыть бота и проверить /account.'
+    except TelegramAPIError:
+        state,error,delay = 0,'Ошибка связи с Telegram.',min(600,30*2**row['attempts'])
+    accounts.complete(row['id'],state,error,delay)
+
+
 async def notification_loop(bot):
     while True:
         try:
@@ -390,7 +446,10 @@ async def main():
             url = app_url('telegram')
             await bot.set_chat_menu_button(menu_button=MenuButtonWebApp(text='Меню',web_app=WebAppInfo(url=url)) if url else MenuButtonCommands())
             await bot.set_my_commands([BotCommand(command='menu', description='Меню'),
+                                       BotCommand(command='account', description='Личный кабинет по номеру телефона'),
                                        BotCommand(command='orders', description='Мои заказы'),
+                                       BotCommand(command='stopupdates', description='Отключить уведомления личного кабинета'),
+                                       BotCommand(command='logout', description='Выйти из личного кабинета'),
                                        BotCommand(command='cancel', description='Отменить оформление'),
                                        BotCommand(command='privacy', description='Обработка данных'),
                                        BotCommand(command='id', description='Мой Telegram ID')])

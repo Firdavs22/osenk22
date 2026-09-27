@@ -257,6 +257,8 @@ def place_order(user, token):
         c.execute('UPDATE orders SET notified=0 WHERE id=?',(oid,))
         from .store import notify_order
         notify_order(c,oid)
+        from .customer_accounts import new_order
+        new_order(c,oid)
         c.execute('DELETE FROM cart WHERE user_id=?', (user,))
         c.execute('DELETE FROM drafts WHERE user_id=?', (user,))
         return oid
@@ -277,6 +279,8 @@ def set_status(oid, status):
         else:
             from .order_updates import queue_status
             queue_status(c, dict(order) | {'status':status})
+        from .customer_accounts import queue
+        queue(c, dict(order) | {'status':status})
         if status == 'accepted':
             from .integrations import queue_iiko
             queue_iiko(c, oid)

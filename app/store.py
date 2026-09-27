@@ -180,6 +180,8 @@ async def checkout(request: Request):
                 create_payment(c, oid)
             else:
                 notify_order(c, oid)
+            from .customer_accounts import new_order
+            new_order(c, oid)
             c.execute('DELETE FROM cart WHERE user_id=?', (user,))
         request.session.pop('checkout_key', None)
         return {'url': '/order/' + public_token}
@@ -212,8 +214,9 @@ def order_result(request: Request, token: str):
         items = c.execute('SELECT * FROM order_items WHERE order_id=?', (order['id'],)).fetchall()
         subscribed = bool(c.execute('SELECT 1 FROM order_subscriptions WHERE order_id=?',(order['id'],)).fetchone())
     from .order_updates import telegram_state
+    from .customer_accounts import links
     return render(request, 'store_order.html', order=order, payment=payment, items=items,
-                  subscribed=subscribed, telegram=telegram_state(), tracking={
+                  subscribed=subscribed, telegram=telegram_state(), account_links=links(), tracking={
                       'status':order['status'],'payment_status':order['payment_status'],
                       'payment_state':payment['state'] if payment else '', 'payment_ready':bool(payment and payment['url']), 'subscribed':subscribed})
 

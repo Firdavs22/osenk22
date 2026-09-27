@@ -378,8 +378,19 @@ def notification_page(request: Request):
     from .order_updates import telegram_state
     with db.connect() as c:
         rows = c.execute('SELECT * FROM outbox ORDER BY id DESC LIMIT 100').fetchall()
+        customer_rows=c.execute('''SELECT m.*,a.platform,a.chat_id,a.notifications FROM customer_messages m
+            JOIN customer_accounts a ON a.id=m.account_id ORDER BY m.id DESC LIMIT 100''').fetchall()
         missing = c.execute("SELECT count(*) FROM orders WHERE notified=0 AND status NOT IN ('cancelled','done') AND (payment_method<>'tbank' OR payment_status='paid')").fetchone()[0]
-    return render(request, 'notifications.html', notifications=rows, telegram=telegram_state(), missing=missing, page='notifications')
+    return render(request, 'notifications.html', notifications=rows, customer_notifications=customer_rows,
+                  telegram=telegram_state(), missing=missing, page='notifications')
+
+
+@app.post('/admin/customer-notifications/{nid:int}/retry')
+async def retry_customer_notification(request: Request, nid: int):
+    await form_data(request)
+    with db.connect(True) as c:
+        c.execute("UPDATE customer_messages SET sent=0,attempts=0,next_try=0,error='' WHERE id=? AND sent=-1",(nid,))
+    return redirect('/admin/notifications',ok='Повтор сообщения покупателю запланирован')
 
 
 @app.post('/admin/notifications/{nid:int}/retry')

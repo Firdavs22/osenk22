@@ -12,9 +12,9 @@ import time
 import httpx
 from fastapi import APIRouter, HTTPException, Request
 
-from . import config, db
+from . import config, db, customer_accounts as accounts
 from .mini_apps import public_origin
-from .vault import get_config, set_config
+from .vault import get_config, set_config, seal, unseal
 
 router = APIRouter()
 log = logging.getLogger(__name__)
@@ -24,6 +24,34 @@ EVENT_TYPES = ['bot_started','message_created','message_callback']
 
 class DeliveryUnknown(Exception):
     """A send may have succeeded; do not duplicate it automatically."""
+
+
+def connection_error(exc):
+    """Allowlisted diagnostics only: never render provider bodies, tokens or headers."""
+    cause, seen = exc, set()
+    while cause is not None and id(cause) not in seen:
+        seen.add(id(cause))
+        if isinstance(cause,ssl.SSLCertVerificationError) or 'CERTIFICATE_VERIFY_FAILED' in str(cause):
+            return 'MAX: сервер не доверяет цепочке TLS-сертификатов API. Настройте MAX_CA_BUNDLE с официальным сертификатом Минцифры и перезапустите sushi-web.'
+        cause=cause.__cause__ or cause.__context__
+    if isinstance(exc,FileNotFoundError):
+        return 'MAX: файл MAX_CA_BUNDLE не найден. Проверьте абсолютный путь в .env.'
+    if isinstance(exc,PermissionError):
+        return 'MAX: пользователь sushi не может прочитать MAX_CA_BUNDLE.'
+    if isinstance(exc,ssl.SSLError):
+        return 'MAX: ошибка TLS или формата PEM в MAX_CA_BUNDLE.'
+    if isinstance(exc,httpx.HTTPStatusError):
+        status=exc.response.status_code
+        reason={401:'Токен не принят. Проверьте сохранённый токен бота.',
+                403:'Доступ запрещён. Проверьте токен и доступ бота к API.',
+                400:'Параметры запроса отклонены. Проверьте HTTPS-адрес webhook.',
+                429:'Превышена частота запросов. Повторите позже.'}.get(status,'API вернул ошибку. Повторите позже.')
+        return f'MAX HTTP {status}: {reason}'
+    if isinstance(exc,httpx.TimeoutException):
+        return 'MAX: время ожидания истекло. Проверьте исходящий HTTPS-доступ VPS к platform-api2.max.ru:443.'
+    if isinstance(exc,httpx.ConnectError):
+        return 'MAX: соединение не установлено. Проверьте DNS, исходящий порт 443 и цепочку TLS-сертификатов.'
+    return 'MAX: ответ не подтверждён. Проверьте соединение командой python -m app.max_check.'
 
 
 def bot_key(cfg):
@@ -55,13 +83,15 @@ def navigation(cfg, info=False):
         text = f'{s["shop_name"]}\nАдрес: {s["address"]}\nТелефон: {s["phone"]}\nВремя работы: {s["hours"]}'
     return {'text':text,'attachments':[{'type':'inline_keyboard','payload':{'buttons':[
         [{'type':'link','text':'🍣 Открыть меню', 'url':url}],
+        [{'type':'callback','text':'👤 Личный кабинет','payload':'account'},
+         {'type':'callback','text':'📦 Мои заказы','payload':'orders'}],
         [{'type':'callback','text':'📍 О магазине' if not info else '← Назад','payload':'info' if not info else 'menu'}],
         [{'type':'link','text':'Доставка и оплата','url':origin+'/legal/delivery'}]
     ]}}]}
 
 
-def event_data(event):
-    """Retain only routing data, not user names, phone numbers or message text."""
+def event_data(event, cfg=None):
+    """Retain routing IDs and only cryptographically verified, encrypted contacts."""
     kind = event.get('update_type')
     if kind not in EVENT_TYPES:
         return None
@@ -73,6 +103,9 @@ def event_data(event):
         identity = str(stamp)
         action = 'menu'
         callback = ''
+        user = (event.get('user') or {}).get('user_id')
+        if event.get('payload')=='account':
+            action='account'
     else:
         message = event.get('message') or {}
         recipient = message.get('recipient') or {}
@@ -85,11 +118,28 @@ def event_data(event):
         callback = str(callback_data.get('callback_id') or '') if kind=='message_callback' else ''
         identity = callback or str((message.get('body') or {}).get('mid') or '')
         action = 'info' if callback_data.get('payload')=='info' else 'menu'
+        user = (callback_data.get('user') or {}).get('user_id') if kind=='message_callback' else (message.get('sender') or {}).get('user_id')
+        value = callback_data.get('payload') if kind=='message_callback' else ((message.get('body') or {}).get('text') or '').strip().lstrip('/')
+        if isinstance(value,str) and (value in ('account','orders','stopupdates','logout','cancel') or re.fullmatch(r'orders:[0-9]{1,18}',value)):
+            action=value
+        if kind=='message_created' and any(a.get('type')=='contact' for a in (message.get('body') or {}).get('attachments') or []):
+            action='contact'
     if type(chat) is not int or not -(2**63)<chat<2**63 or not identity or len(identity)>200:
         raise ValueError()
     if kind=='message_callback' and not callback:
         raise ValueError()
-    return {'kind':kind,'chat_id':chat,'identity':identity,'callback_id':callback,'action':action}
+    result = {'kind':kind,'chat_id':chat,'identity':identity,'callback_id':callback,'action':action}
+    if kind=='message_callback':
+        result['message_id']=str((message.get('body') or {}).get('mid') or '')
+    if type(user) is int and 0<user<2**63:
+        result['user_id']=user
+        if action=='contact' and cfg:
+            phone=accounts.max_contact_phone(event,cfg['token'])
+            if phone:
+                result['contact']=seal(phone)
+    elif action not in ('menu','info'):
+        return None
+    return result
 
 
 @router.post('/api/max/webhook')
@@ -108,7 +158,7 @@ async def webhook(request: Request):
         data = json.loads(raw)
         if not isinstance(data,dict):
             raise ValueError()
-        event = event_data(data)
+        event = event_data(data,cfg)
     except (ValueError,TypeError,AttributeError):
         raise HTTPException(400,'Некорректное событие') from None
     if event:
@@ -122,9 +172,48 @@ async def webhook(request: Request):
 
 async def process_event(cfg, event):
     body = navigation(cfg,event['action']=='info')
-    if event['callback_id']:
-        await api(cfg,'POST','/answers',{'message':body},{'callback_id':event['callback_id']})
+    action,user,chat,key = event['action'],event.get('user_id'),event['chat_id'],bot_key(cfg)
+    persistent = False
+    if action=='account':
+        accounts.begin_contact('max',key,user,chat)
+        body={'text':accounts.CONTACT_PROMPT,'attachments':[{'type':'inline_keyboard','payload':{'buttons':[
+            [{'type':'request_contact','text':'Поделиться своим номером'}],
+            [{'type':'callback','text':'Отмена','payload':'cancel'}]]}}]}
+    elif action=='contact':
+        try:
+            phone=unseal(event['contact']) if event.get('contact') else ''
+            accounts.verify_contact('max',key,user,chat,phone)
+            body['text']='Номер подтверждён. Уведомления включены. Нажмите «Мои заказы»: здесь будут и новые заказы с этим телефоном.'
+        except ValueError as exc:
+            body['text']=str(exc)
+    elif action.startswith('orders'):
+        before=int(action.split(':')[1]) if ':' in action else 0
+        texts,cursor,linked=accounts.history('max',key,user,before,compact=True)
+        if texts:
+            body['text']='\n\n'.join(texts)+'\n\nИстория сохранена в чате. /orders — актуальные статусы.'
+            if cursor:
+                body['attachments'][0]['payload']['buttons'].insert(0,[{'type':'callback','text':'Ещё заказы →','payload':f'orders:{cursor}'}])
+            persistent=True
+        else:
+            body['text']='Заказов пока нет.' if linked else 'Для заказов с сайта подтвердите свой номер: /account.'
+    elif action in ('stopupdates','logout'):
+        accounts.stop('max',key,user,logout=action=='logout')
+        body['text']='Вы вышли. Заказы и сообщения в чате сохранены.' if action=='logout' else 'Уведомления отключены. История: /orders. Включить снова: /account.'
+    elif user:
+        accounts.cancel_contact('max',key,user)
+    if persistent:
+        # History messages must never be edited/deleted by navigation callbacks.
+        if event['callback_id']:
+            await api(cfg,'POST','/answers',{'notification':'История заказов'},{'callback_id':event['callback_id']})
+        await send_persistent(cfg,chat,body)
         return
+    if event['callback_id']:
+        with db.connect() as c:
+            tracked=c.execute('SELECT message_id FROM max_screens WHERE bot_key=? AND chat_id=?',(key,chat)).fetchone()
+        if tracked and event.get('message_id')==tracked['message_id']:
+            await api(cfg,'POST','/answers',{'message':body},{'callback_id':event['callback_id']})
+            return
+        await api(cfg,'POST','/answers',{'notification':'Готово'},{'callback_id':event['callback_id']})
     key, chat = bot_key(cfg),event['chat_id']
     with db.connect() as c:
         previous = c.execute('SELECT message_id FROM max_screens WHERE bot_key=? AND chat_id=?',(key,chat)).fetchone()
@@ -146,10 +235,37 @@ async def process_event(cfg, event):
         c.execute('INSERT INTO max_screens VALUES (?,?,?) ON CONFLICT(bot_key,chat_id) DO UPDATE SET message_id=excluded.message_id',(key,chat,mid))
 
 
+async def send_persistent(cfg, chat, body):
+    try:
+        response=await api(cfg,'POST','/messages',body,{'chat_id':chat})
+    except (httpx.ReadTimeout,httpx.WriteTimeout,httpx.ReadError,httpx.RemoteProtocolError):
+        raise DeliveryUnknown() from None
+    if not ((response.get('message') or {}).get('body') or {}).get('mid'):
+        raise DeliveryUnknown()
+
+
+async def deliver_customer_once(cfg):
+    row=accounts.claim('max',bot_key(cfg))
+    if not row:
+        return
+    state,error,delay=1,'',30
+    try:
+        await send_persistent(cfg,row['chat_id'],{'text':row['text']})
+    except DeliveryUnknown:
+        state,error=-1,'Результат отправки неизвестен. Проверьте историю чата перед повтором.'
+    except Exception as exc:
+        status=exc.response.status_code if isinstance(exc,httpx.HTTPStatusError) else None
+        state=-1 if status in (400,401,403,404) else 0
+        error=connection_error(exc)
+        delay=min(600,30*2**row['attempts'])
+    accounts.complete(row['id'],state,error,delay)
+
+
 async def tick():
     cfg = get_config('max')
     if not cfg.get('enabled') or not cfg.get('token'):
         return
+    await deliver_customer_once(cfg)
     now = time.time()
     with db.connect(True) as c:
         c.execute("UPDATE max_events SET state='failed',error='Исчерпаны попытки обработки события' WHERE state='pending' AND attempts>=5 AND next_try<=?",(now,))
@@ -212,5 +328,5 @@ async def configure(request: Request, action: str):
         return redirect('/admin/integrations',ok='MAX: подключён @'+username+('. Webhook зарегистрирован.' if action=='subscribe' else '. Доступ подтверждён.'))
     except ValueError as exc:
         return redirect('/admin/integrations',error=exc)
-    except Exception:
-        return redirect('/admin/integrations',error='MAX не подтвердил подключение. Проверьте токен, HTTPS и доверенные сертификаты сервера (MAX_CA_BUNDLE).')
+    except Exception as exc:
+        return redirect('/admin/integrations',error=connection_error(exc))

@@ -161,6 +161,8 @@ def test_max_callback_edits_message_and_ignores_groups(client,monkeypatch):
            'message':{'recipient':{'chat_id':123,'chat_type':'chat'},'body':{'mid':'mid-1'}}}
     post_max(client,event)
     with db.connect() as c:assert not c.execute('SELECT 1 FROM max_events').fetchone()
+    with db.connect(True) as c:
+        c.execute('INSERT INTO max_screens VALUES (?,?,?)',(max_bot.bot_key(MAX),123,'mid-1'))
     event['message']['recipient']['chat_type']='dialog';post_max(client,event)
     calls=[]
     async def api(*args):calls.append(args);return {'success':True}
