@@ -51,6 +51,12 @@ def migrate(c):
         lease_until REAL NOT NULL DEFAULT 0, owner TEXT NOT NULL DEFAULT '',
         last_success TEXT NOT NULL DEFAULT '', result TEXT NOT NULL DEFAULT '', error TEXT NOT NULL DEFAULT '')""")
     c.execute('INSERT OR IGNORE INTO menu_sync(id) VALUES (1)')
+    c.execute('CREATE TABLE IF NOT EXISTS telegram_screens(bot_id INTEGER NOT NULL,chat_id INTEGER NOT NULL,messages TEXT NOT NULL,PRIMARY KEY(bot_id,chat_id))')
+    c.execute("""CREATE TABLE IF NOT EXISTS max_events(
+        id TEXT PRIMARY KEY,bot_key TEXT NOT NULL,payload TEXT NOT NULL,created REAL NOT NULL,
+        state TEXT NOT NULL DEFAULT 'pending',attempts INTEGER NOT NULL DEFAULT 0,
+        next_try REAL NOT NULL DEFAULT 0,error TEXT NOT NULL DEFAULT '')""")
+    c.execute('CREATE TABLE IF NOT EXISTS max_screens(bot_key TEXT NOT NULL,chat_id INTEGER NOT NULL,message_id TEXT NOT NULL,PRIMARY KEY(bot_key,chat_id))')
     c.executemany('INSERT OR IGNORE INTO settings VALUES (?,?)', DEFAULTS.items())
     if not c.execute('SELECT 1 FROM slides LIMIT 1').fetchone():
         c.execute('INSERT INTO slides(title,subtitle) VALUES (?,?)',

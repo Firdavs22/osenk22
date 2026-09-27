@@ -10,9 +10,11 @@ from aiogram.exceptions import TelegramAPIError, TelegramForbiddenError, Telegra
 from aiogram.filters import Command
 from aiogram.types import (BotCommand, CallbackQuery, FSInputFile, InlineKeyboardButton,
                            InlineKeyboardMarkup, KeyboardButton, Message,
-                           ReplyKeyboardMarkup, ReplyKeyboardRemove)
+                           ReplyKeyboardMarkup, ReplyKeyboardRemove, WebAppInfo, MenuButtonWebApp, MenuButtonCommands)
 
 from . import config, db
+from .chat_screen import screen
+from .mini_apps import app_url
 
 log = logging.getLogger(__name__)
 dp = Dispatcher()
@@ -25,25 +27,33 @@ def keyboard(rows):
 
 
 def home_keyboard():
-    return keyboard([[('🍣 Меню', 'menu'), ('🛒 Корзина', 'cart')],
-                     [('📦 Мои заказы', 'orders'), ('📍 О магазине', 'info')]])
+    markup = keyboard([[('🍣 Меню в чате', 'menu'), ('🛒 Корзина чата', 'cart')],
+                       [('📦 Заказы в чате', 'orders'), ('📍 О магазине', 'info')]])
+    url = app_url('telegram')
+    if url:
+        markup.inline_keyboard.insert(0,[InlineKeyboardButton(text='🍣 Открыть меню с фото',web_app=WebAppInfo(url=url))])
+    return markup
 
 
 async def send(message, text, reply_markup=None):
-    for i in range(0, len(text), 3500):
-        await message.answer(text[i:i+3500], reply_markup=reply_markup if i+3500 >= len(text) else None)
+    await screen(message, text, reply_markup)
 
 
 async def show_menu(message):
-    rows = [[(c['name'], f'cat:{c["id"]}:0')] for c in db.categories()]
+    available = {p['category_id'] for p in db.products(active=True)}
+    rows = [[(c['name'], f'cat:{c["id"]}:0')] for c in db.categories() if c['id'] in available]
     rows.append([('🛒 Корзина', 'cart')])
-    await message.answer('🍣 Выберите категорию', reply_markup=keyboard(rows))
+    markup = keyboard(rows)
+    url = app_url('telegram')
+    if url:
+        markup.inline_keyboard.insert(0,[InlineKeyboardButton(text='🍣 Открыть меню с фото',web_app=WebAppInfo(url=url))])
+    await screen(message,'🍣 Выберите категорию' + (' или откройте мини-приложение. Корзина мини-приложения ведётся отдельно от корзины чата.' if url else ''),reply_markup=markup)
 
 
 async def show_cart(message, user):
     items = db.cart(user)
     if not items:
-        await message.answer('Ваша корзина пока пуста.', reply_markup=home_keyboard())
+        await screen(message, 'Ваша корзина пока пуста.', reply_markup=home_keyboard())
         return
     text = '🛒 Ваша корзина\n\n' + '\n'.join(
         f'{p["name"]} × {p["quantity"]} — {db.money(p["price"] * p["quantity"])}' +
@@ -61,9 +71,9 @@ async def show_orders(message, user):
         orders = c.execute('SELECT * FROM orders WHERE user_id=? ORDER BY id DESC LIMIT 5', (user,)).fetchall()
         details = [(o, c.execute('SELECT * FROM order_items WHERE order_id=?', (o['id'],)).fetchall()) for o in orders]
     if not orders:
-        await message.answer('У вас ещё нет заказов.', reply_markup=home_keyboard())
-    for order, items in details:
-        await send(message, db.order_summary(order, items), home_keyboard())
+        await screen(message, 'У вас ещё нет заказов.', reply_markup=home_keyboard())
+    else:
+        await send(message, '\n\n────────\n\n'.join(db.order_summary(order, items) for order, items in details), home_keyboard())
 
 
 async def show_info(message):
@@ -87,19 +97,19 @@ async def commands(message: Message):
     user = message.from_user.id
     command = message.text.split()[0].split('@')[0]
     if command == '/id':
-        await message.answer(f'Ваш Telegram ID: {user}')
+        await screen(message, f'Ваш Telegram ID: {user}')
         return
     if command == '/orders':
         await show_orders(message, user)
         return
     if command == '/privacy':
-        await message.answer('Для обработки заказа магазин получает ваш Telegram ID, имя, телефон, '
+        await screen(message, 'Для обработки заказа магазин получает ваш Telegram ID, имя, телефон, '
                              'адрес, комментарий и состав заказа. Они сохраняются на сервере магазина. '
                              'По вопросам использования и удаления данных обратитесь в магазин: ' +
                              (db.settings()['phone'] or 'контакт указан в разделе «О магазине».'))
         return
     db.save_draft(user, None, {})
-    await message.answer('Оформление отменено. Корзина сохранена.' if command == '/cancel' else
+    await screen(message, 'Оформление отменено. Корзина сохранена.' if command == '/cancel' else
                          f'Добро пожаловать в {db.settings()["shop_name"]}! 🍣\nВыберите блюда — мы приготовим ваш заказ.',
                          reply_markup=ReplyKeyboardRemove())
     await show_menu(message)
@@ -130,7 +140,7 @@ async def callbacks(call: CallbackQuery):
             if nav:
                 rows.append(nav)
             rows.append([('Категории', 'menu'), ('Корзина', 'cart')])
-            await message.answer('Выберите блюдо' if items else 'В этой категории пока нет доступных блюд.', reply_markup=keyboard(rows))
+            await screen(message, 'Выберите блюдо' if items else 'В этой категории пока нет доступных блюд.', reply_markup=keyboard(rows))
         elif action.startswith('product:'):
             p = db.product(int(action.split(':')[1]))
             if not p or not p['active']:
@@ -140,18 +150,13 @@ async def callbacks(call: CallbackQuery):
                 text += '\n\n' + p['description']
             markup = keyboard([[('➕ В корзину', f'add:{p["id"]}')], [('Меню', 'menu'), ('Корзина', 'cart')]])
             photo = config.MEDIA / p['photo'] if p['photo'] else None
-            if photo and photo.is_file():
-                try:
-                    await message.answer_photo(FSInputFile(photo))
-                except TelegramAPIError:
-                    log.warning('Product photo send failed for product %s', p['id'])
-            await send(message, text, markup)
+            await screen(message,text,markup,photo=photo if photo and photo.is_file() else None)
         elif action.split(':')[0] in ('add', 'plus', 'minus', 'remove'):
             kind, pid = action.split(':')
             delta = -99 if kind == 'remove' else (-1 if kind == 'minus' else 1)
             db.cart_change(user, int(pid), delta)
             if kind == 'add':
-                await message.answer('Добавлено в корзину ✓', reply_markup=home_keyboard())
+                await screen(message, 'Добавлено в корзину ✓', reply_markup=home_keyboard())
             else:
                 await show_cart(message, user)
         elif action == 'cart':
@@ -171,7 +176,7 @@ async def callbacks(call: CallbackQuery):
             if db.settings()['delivery_enabled'] == '1':
                 rows.insert(0, [('Доставка', 'method:delivery')])
             rows.append([('Отмена', 'cancel')])
-            await message.answer('Как вам удобно получить заказ?', reply_markup=keyboard(rows))
+            await screen(message, 'Как вам удобно получить заказ?', reply_markup=keyboard(rows))
         elif action.startswith('method:'):
             step, data = db.draft(user)
             if step != 'method':
@@ -180,12 +185,12 @@ async def callbacks(call: CallbackQuery):
             if data['method'] == 'delivery' and db.settings().get('delivery_districts') == '1':
                 from .shop_policy import DISTRICTS
                 db.save_draft(user, 'district', data)
-                await message.answer('Выберите район. Для доставки за пределы этих районов заранее согласуйте стоимость по телефону ' + db.settings()['phone'],
+                await screen(message, 'Выберите район. Для доставки за пределы этих районов заранее согласуйте стоимость по телефону ' + db.settings()['phone'],
                     reply_markup=keyboard([[(name, 'district:'+str(i))] for i,name in enumerate(DISTRICTS)] + [[('Отмена','cancel')]]))
                 return
             db.quote(user, data)
             db.save_draft(user, 'customer', data)
-            await message.answer('Как к вам обращаться? Напишите имя.\nДля отмены — /cancel', reply_markup=ReplyKeyboardRemove())
+            await screen(message, 'Как к вам обращаться? Напишите имя.\nДля отмены — /cancel', reply_markup=ReplyKeyboardRemove())
         elif action.startswith('district:'):
             from .shop_policy import DISTRICTS
             step, data = db.draft(user)
@@ -197,7 +202,7 @@ async def callbacks(call: CallbackQuery):
             data['district'] = DISTRICTS[index]
             db.quote(user,data)
             db.save_draft(user,'customer',data)
-            await message.answer('Как к вам обращаться? Напишите имя.',reply_markup=ReplyKeyboardRemove())
+            await screen(message, 'Как к вам обращаться? Напишите имя.',reply_markup=ReplyKeyboardRemove())
         elif action == 'skip':
             step, data = db.draft(user)
             if step != 'comment':
@@ -206,18 +211,18 @@ async def callbacks(call: CallbackQuery):
             await confirm_preview(message, user, data)
         elif action.startswith('confirm:'):
             oid = db.place_order(user, action.split(':')[1])
-            await message.answer(f'Заказ №{oid} сохранён. Подробности придут отдельным сообщением.', reply_markup=home_keyboard())
+            await screen(message, f'Заказ №{oid} сохранён. Подробности придут отдельным сообщением.', reply_markup=home_keyboard())
         elif action == 'cancel':
             db.save_draft(user, None, {})
-            await message.answer('Оформление отменено. Корзина сохранена.', reply_markup=ReplyKeyboardRemove())
+            await screen(message, 'Оформление отменено. Корзина сохранена.', reply_markup=ReplyKeyboardRemove())
             await show_menu(message)
     except (ValueError, IndexError) as exc:
-        await message.answer(str(exc) or 'Не удалось выполнить действие', reply_markup=home_keyboard())
+        await screen(message, str(exc) or 'Не удалось выполнить действие', reply_markup=home_keyboard())
 
 
 async def ask_comment(message, user, data):
     db.save_draft(user, 'comment', data)
-    await message.answer('Комментарий к заказу: количество приборов, пожелания, аллергии.\n'
+    await screen(message, 'Комментарий к заказу: количество приборов, пожелания, аллергии.\n'
                          'Напишите текст или нажмите «Без комментария».',
                          reply_markup=keyboard([[('Без комментария', 'skip')], [('Отмена', 'cancel')]]))
 
@@ -243,7 +248,7 @@ async def checkout_text(message: Message):
                 raise ValueError('Введите имя от 2 до 80 символов')
             data['customer'] = text
             db.save_draft(user, 'phone', data)
-            await message.answer('Укажите телефон или отправьте свой контакт кнопкой ниже.',
+            await screen(message, 'Укажите телефон или отправьте свой контакт кнопкой ниже.',
                 reply_markup=ReplyKeyboardMarkup(keyboard=[[KeyboardButton(text='📱 Отправить мой телефон', request_contact=True)]], resize_keyboard=True, one_time_keyboard=True))
         elif step == 'phone':
             if message.contact:
@@ -256,10 +261,10 @@ async def checkout_text(message: Message):
             data['phone'] = phone
             if data['method'] == 'delivery':
                 db.save_draft(user, 'address', data)
-                await message.answer('Напишите адрес: город, улица, дом, квартира, подъезд, этаж.', reply_markup=ReplyKeyboardRemove())
+                await screen(message, 'Напишите адрес: город, улица, дом, квартира, подъезд, этаж.', reply_markup=ReplyKeyboardRemove())
             else:
                 data['address'] = db.settings()['address'] or 'Адрес самовывоза уточнит магазин'
-                await message.answer('Вы выбрали самовывоз.', reply_markup=ReplyKeyboardRemove())
+                await screen(message, 'Вы выбрали самовывоз.', reply_markup=ReplyKeyboardRemove())
                 await ask_comment(message, user, data)
         elif step == 'address':
             if not 10 <= len(text) <= 400:
@@ -272,15 +277,21 @@ async def checkout_text(message: Message):
             data['comment'] = text
             await confirm_preview(message, user, data)
         elif step == 'confirm':
-            await message.answer('Подтвердите заказ кнопкой в сообщении выше или нажмите /cancel.')
+            await confirm_preview(message, user, data)
         elif step == 'district':
-            await message.answer('Выберите район кнопкой выше или нажмите /cancel.')
+            from .shop_policy import DISTRICTS
+            await screen(message, 'Выберите район доставки.', reply_markup=keyboard(
+                [[(name, 'district:'+str(i))] for i,name in enumerate(DISTRICTS)] + [[('Отмена','cancel')]]))
         elif step == 'method':
-            await message.answer('Выберите доставку или самовывоз кнопкой выше.')
+            rows = [[('Самовывоз', 'method:pickup')], [('Отмена', 'cancel')]]
+            if db.settings()['delivery_enabled']=='1':
+                rows.insert(0,[('Доставка', 'method:delivery')])
+            await screen(message, 'Выберите доставку или самовывоз.', reply_markup=keyboard(rows))
         else:
-            await message.answer('Откройте меню, чтобы выбрать блюда.', reply_markup=home_keyboard())
+            await screen(message, 'Откройте меню, чтобы выбрать блюда.', reply_markup=home_keyboard())
     except ValueError as exc:
-        await message.answer(str(exc))
+        markup = keyboard([[('Без комментария','skip')], [('Отмена','cancel')]]) if step=='comment' else None
+        await screen(message, str(exc), reply_markup=markup)
 
 
 async def deliver_once(bot):
@@ -320,7 +331,8 @@ def telegram_token():
 
 
 async def watch_token(token):
-    while telegram_token() == token:
+    initial_url = app_url('telegram')
+    while telegram_token() == token and app_url('telegram') == initial_url:
         await asyncio.sleep(15)
 
 
@@ -335,6 +347,8 @@ async def main():
         tasks = []
         try:
             await bot.delete_webhook(drop_pending_updates=False)
+            url = app_url('telegram')
+            await bot.set_chat_menu_button(menu_button=MenuButtonWebApp(text='Меню',web_app=WebAppInfo(url=url)) if url else MenuButtonCommands())
             await bot.set_my_commands([BotCommand(command='menu', description='Меню'),
                                        BotCommand(command='orders', description='Мои заказы'),
                                        BotCommand(command='cancel', description='Отменить оформление'),

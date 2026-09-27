@@ -12,7 +12,7 @@ from fastapi.responses import FileResponse, RedirectResponse
 from fastapi.staticfiles import StaticFiles
 from fastapi.templating import Jinja2Templates
 from PIL import Image, ImageOps, UnidentifiedImageError
-from starlette.middleware.sessions import SessionMiddleware
+from .mini_apps import ShopSessions
 
 from . import config, db
 from .security import verify_password
@@ -57,7 +57,8 @@ async def lifespan(app):
     from contextlib import suppress
     from .integrations import worker
     from .menu_sync import worker as menu_worker, image_worker
-    tasks = [asyncio.create_task(fn()) for fn in (worker, menu_worker, image_worker)]
+    from .max_bot import worker as max_worker
+    tasks = [asyncio.create_task(fn()) for fn in (worker, menu_worker, image_worker, max_worker)]
     try:
         yield
     finally:
@@ -69,9 +70,7 @@ async def lifespan(app):
 
 
 app = FastAPI(lifespan=lifespan, docs_url=None, redoc_url=None, openapi_url=None)
-app.add_middleware(SessionMiddleware, secret_key=config.SESSION_SECRET,
-                   session_cookie='sushi_admin', max_age=8*3600, same_site='strict',
-                   https_only=config.COOKIE_SECURE)
+app.add_middleware(ShopSessions)
 app.add_middleware(RequestLimit)
 app.mount('/static', StaticFiles(directory=config.ROOT / 'app/static'), name='static')
 templates = Jinja2Templates(directory=config.ROOT / 'app/templates')
@@ -86,6 +85,13 @@ async def headers(request: Request, call_next):
     response.headers['Referrer-Policy'] = 'same-origin'
     response.headers['Cache-Control'] = 'no-store'
     response.headers['Content-Security-Policy'] = "default-src 'self'; img-src 'self' data:; style-src 'self'; script-src 'self'; connect-src 'self'; base-uri 'none'; form-action 'self'; frame-ancestors 'none'"
+    platform = request.session.get('mini_app')
+    public_page = request.url.path=='/' or request.url.path.startswith(('/mini/','/order/','/legal/'))
+    if public_page and platform in ('telegram','max'):
+        sdk = 'https://telegram.org' if platform=='telegram' else 'https://st.max.ru'
+        parents = 'https://web.telegram.org' if platform=='telegram' else 'https://web.max.ru https://max.ru'
+        del response.headers['X-Frame-Options']
+        response.headers['Content-Security-Policy'] = response.headers['Content-Security-Policy'].replace("script-src 'self'",f"script-src 'self' {sdk}").replace("frame-ancestors 'none'",f'frame-ancestors {parents}')
     return response
 
 
@@ -119,6 +125,7 @@ async def form_data(request, admin=True, *, max_fields=30):
 def render(request, name, **context):
     return templates.TemplateResponse(request=request, name=name, context={
         'csrf': csrf_token(request), 'shop': db.settings(), 'logged_in': authenticated(request),
+        'mini_app': request.session.get('mini_app',''),
         'statuses': db.STATUSES, 'transitions': db.TRANSITIONS,
         'error': request.query_params.get('error', ''), 'ok': request.query_params.get('ok', ''), **context})
 
@@ -401,7 +408,9 @@ from .store import router as store_router
 from .content_admin import router as content_router
 from .menu_import import router as menu_router
 from .menu_sync import router as sync_router
+from .max_bot import router as max_router
 app.include_router(store_router)
 app.include_router(content_router)
 app.include_router(menu_router)
 app.include_router(sync_router)
+app.include_router(max_router)

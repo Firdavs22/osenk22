@@ -52,9 +52,14 @@ def cart_state(user):
 
 
 @router.get('/')
-def storefront(request: Request):
+@router.get('/mini/{platform}')
+def storefront(request: Request, platform: str = ''):
     from .admin import render
     from .integrations import payment_enabled
+    if platform:
+        if platform not in ('telegram','max'):
+            raise HTTPException(404)
+        request.session['mini_app'] = platform
     visitor(request)
     with db.connect() as c:
         slides = c.execute('SELECT * FROM slides WHERE active=1 ORDER BY position,id').fetchall()
@@ -166,6 +171,9 @@ async def checkout(request: Request):
                 (key,user,customer,phone,method,address,comment,q['subtotal'],q['delivery'],q['total'],q['currency'],payment,'pending' if payment=='tbank' else 'unpaid',public_token)).lastrowid
             c.execute('UPDATE orders SET discount=?,district=?,legal_snapshot=? WHERE id=?',
                       (q['discount'],q['district'],q['legal_snapshot'],oid))
+            # Source attribution only: it does not authenticate a messenger user.
+            if request.session.get('mini_app') in ('telegram','max'):
+                c.execute('UPDATE orders SET channel=? WHERE id=?',(request.session['mini_app']+'_app',oid))
             c.executemany('INSERT INTO order_items(order_id,name,price,quantity,product_id,iiko_id,iiko_size) VALUES (?,?,?,?,?,?,?)',
                           [(oid,p['name'],p['price'],p['quantity'],p['id'],p['iiko_id'],p['iiko_size']) for p in q['items']])
             if payment == 'tbank':
@@ -186,7 +194,8 @@ def notify_order(c, oid):
     items = c.execute('SELECT * FROM order_items WHERE order_id=?', (oid,)).fetchall()
     summary = db.order_summary(order, items)
     for admin in db.admin_ids():
-        db.enqueue(c, admin, 'Новый заказ с сайта!\n\n' + summary)
+        source = {'telegram_app':'из мини-приложения Telegram','max_app':'из мини-приложения MAX'}.get(order['channel'],'с сайта')
+        db.enqueue(c, admin, 'Новый заказ ' + source + '!\n\n' + summary)
     c.execute('UPDATE orders SET notified=1 WHERE id=?', (oid,))
 
 

@@ -235,6 +235,8 @@ python -m pytest tests -q
 
 ## Устройство проекта и документация
 
+Меню в Telegram с обновлением сообщений, мини-приложения Telegram/MAX и подключение MAX описаны в [MESSENGERS.md](MESSENGERS.md). Каталог общий с сайтом; корзина чата Telegram и гостевая корзина мини-приложения отдельные. Для MAX подготовлены настройки и webhook, включение требует токена платформы.
+
 `app/bot.py` — Telegram; `app/admin.py` — веб; `app/db.py` — данные и логика заказов; `app/templates` и `app/static` — интерфейс; `app/manage.py` — настройка и резервирование; `deploy` — VPS; `tests` — проверки.
 
 Использованные официальные справочники: [aiogram — long polling](https://docs.aiogram.dev/en/v3.17.0/dispatcher/long_polling.html), [FastAPI — шаблоны](https://fastapi.tiangolo.com/advanced/templates/), [FastAPI — формы и файлы](https://fastapi.tiangolo.com/tutorial/request-forms-and-files/).

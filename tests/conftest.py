@@ -19,6 +19,8 @@ def shop(tmp_path, monkeypatch):
     monkeypatch.setattr(config, 'ADMIN_PASSWORD_HASH', hash_password('correct horse sushi 123'))
     monkeypatch.setattr(config, 'ADMIN_USERNAME', 'admin')
     monkeypatch.setattr(config, 'COOKIE_SECURE', False)
+    monkeypatch.setattr(config, 'PUBLIC_URL', '')
+    monkeypatch.setattr(config, 'MAX_CA_BUNDLE', '')
     db.seed()
     with db.connect(True) as c:
         c.executemany('UPDATE settings SET value=? WHERE key=?', [('1', 'orders_open'), ('0', 'minimum_order'), ('г. Москва, улица Примерная, 1', 'address')])
@@ -28,13 +30,14 @@ def shop(tmp_path, monkeypatch):
 @pytest.fixture
 def client(shop, monkeypatch):
     from fastapi.testclient import TestClient
-    from app import admin, integrations, menu_sync
+    from app import admin, integrations, menu_sync, max_bot
     import asyncio
     async def idle():
         await asyncio.Event().wait()
     monkeypatch.setattr(integrations, 'worker', idle)
     monkeypatch.setattr(menu_sync, 'worker', idle)
     monkeypatch.setattr(menu_sync, 'image_worker', idle)
+    monkeypatch.setattr(max_bot, 'worker', idle)
     importlib.reload(admin)
     with TestClient(admin.app) as client:
         yield client

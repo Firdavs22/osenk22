@@ -1,5 +1,6 @@
 import json
 import re
+import secrets
 from urllib.parse import urlparse
 
 from fastapi import APIRouter, HTTPException, Request
@@ -98,7 +99,7 @@ async def save_slide(request: Request):
         await form.close()
 
 
-SECRET_FIELDS = {'telegram': ('token',), 'tbank': ('password',), 'iiko': ('api_key','client_secret')}
+SECRET_FIELDS = {'telegram': ('token',), 'max': ('token','webhook_secret'), 'tbank': ('password',), 'iiko': ('api_key','client_secret')}
 
 
 @router.get('/admin/integrations')
@@ -118,7 +119,11 @@ def integrations_page(request: Request):
         image_counts = dict(c.execute('SELECT state,count(*) FROM menu_images GROUP BY state').fetchall())
         sync = c.execute('SELECT * FROM menu_sync WHERE id=1').fetchone()
         image_errors = c.execute("SELECT p.name,m.error FROM menu_images m JOIN products p ON p.id=m.product_id WHERE m.error<>'' ORDER BY p.id LIMIT 30").fetchall()
-    return render(request,'integrations.html',configs=configs,taxes=TAXES,taxations=TAXATIONS,jobs=jobs,payments=payments,image_counts=image_counts,sync=sync,image_errors=image_errors,page='integrations')
+        max_counts = dict(c.execute('SELECT state,count(*) FROM max_events GROUP BY state').fetchall())
+        max_errors = c.execute("SELECT error FROM max_events WHERE error<>'' ORDER BY created DESC LIMIT 5").fetchall()
+    for platform in ('telegram','max'):
+        configs[platform].setdefault('public_url',config.PUBLIC_URL or (str(request.base_url).rstrip('/') if request.url.scheme=='https' else ''))
+    return render(request,'integrations.html',configs=configs,taxes=TAXES,taxations=TAXATIONS,jobs=jobs,payments=payments,image_counts=image_counts,sync=sync,image_errors=image_errors,max_counts=max_counts,max_errors=max_errors,page='integrations')
 
 
 @router.post('/admin/integrations/{name}')
@@ -129,12 +134,21 @@ async def save_integration(request: Request, name: str):
     form = await form_data(request)
     try:
         value = get_config(name)
+        old_token = value.get('token','')
+        old_url = value.get('public_url','')
         value['enabled'] = form.get('enabled') == 'on'
         for k in SECRET_FIELDS[name]:
+            if name=='max' and k=='webhook_secret':
+                continue
             secret = field(form,k,512,False)
             if secret:
                 value[k] = secret
         if name=='telegram':
+            from .mini_apps import public_origin
+            value['public_url'] = public_origin(field(form,'public_url',250,False))
+            value['mini_app'] = form.get('mini_app')=='on'
+            if value['mini_app'] and not (value['public_url'] or config.PUBLIC_URL):
+                raise ValueError('Для мини-приложения укажите HTTPS-адрес магазина')
             ids = field(form,'admin_ids',500,False)
             if ids and any(not re.fullmatch(r'-?\d{1,16}',part.strip()) for part in ids.split(',')):
                 raise ValueError('Введите числовые ID чатов через запятую')
@@ -144,6 +158,17 @@ async def save_integration(request: Request, name: str):
                 raise ValueError('Неверный формат токена Telegram')
             if value['enabled'] and (not token or not value['admin_ids']):
                 raise ValueError('Нужен токен и хотя бы один ID администратора')
+        elif name=='max':
+            from .mini_apps import public_origin
+            value['public_url'] = public_origin(field(form,'public_url',250,False))
+            value['mini_app'] = form.get('mini_app')=='on'
+            if not value.get('webhook_secret') or old_token!=value.get('token'):
+                value['webhook_secret'] = secrets.token_hex(32)
+                value.pop('bot_username',None)
+            if old_token!=value.get('token') or old_url!=value['public_url']:
+                value['subscribed'] = False
+            if value['enabled'] and not all(value.get(k) for k in ('token','public_url')):
+                raise ValueError('Для MAX нужны токен и HTTPS-адрес магазина')
         elif name=='tbank':
             for k in ('terminal','public_url','tax','delivery_tax','taxation'):
                 value[k] = field(form,k,250,False)
