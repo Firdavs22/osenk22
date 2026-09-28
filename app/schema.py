@@ -1,6 +1,7 @@
 """Additive, repeatable migrations. Existing catalog and orders are preserved."""
 
 DEFAULTS = {
+    'auto_accept': '1',
     'tagline': 'Суши, роллы и маленькие поводы собраться', 'logo': '',
     'hero_mode': 'static', 'delivery_area': '', 'legal_name': '', 'legal_details': '',
     'privacy_text': '', 'offer_text': '',

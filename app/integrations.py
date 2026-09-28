@@ -98,6 +98,8 @@ def apply_payment(row, result):
             if mapped == 'paid':
                 from .store import notify_order
                 notify_order(c, row['order_id'])
+                if current != 'paid':
+                    db.auto_accept(c, row['order_id'])
         c.execute('UPDATE payments SET state=?,error=?,next_try=? WHERE order_id=?',
                   (status or 'pending', '', time.time()+60, row['order_id']))
 

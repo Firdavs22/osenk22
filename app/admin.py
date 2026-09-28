@@ -8,7 +8,7 @@ from pathlib import Path
 from urllib.parse import urlencode
 
 from fastapi import FastAPI, HTTPException, Request
-from fastapi.responses import FileResponse, RedirectResponse
+from fastapi.responses import FileResponse, RedirectResponse, JSONResponse
 from fastapi.staticfiles import StaticFiles
 from fastapi.templating import Jinja2Templates
 from PIL import Image, ImageOps, UnidentifiedImageError
@@ -312,25 +312,30 @@ async def save_category(request: Request):
 
 
 @app.get('/admin/orders')
-def orders_page(request: Request, status: str = '', page_num: int = 1):
+def orders_page(request: Request, status: str = '', page_num: int = 1, fragment: bool = False):
     require_admin(request)
     page_num = max(1, page_num)
-    where, params = ('WHERE status=?', [status]) if status in db.STATUSES else ('', [])
+    status = status if status in db.STATUSES else ''
+    columns = {}
     with db.connect() as c:
-        count = c.execute(f'SELECT count(*) FROM orders {where}', params).fetchone()[0]
-        orders = c.execute(f'SELECT * FROM orders {where} ORDER BY id DESC LIMIT 30 OFFSET ?', [*params, (page_num-1)*30]).fetchall()
-    return render(request, 'orders.html', orders=orders, status=status, page_num=page_num, count=count, page='orders')
+        counts = dict(c.execute('SELECT status,count(*) FROM orders GROUP BY status').fetchall())
+        for key in ([status] if status else db.STATUSES):
+            columns[key] = c.execute('SELECT * FROM orders WHERE status=? ORDER BY id DESC LIMIT 30 OFFSET ?',
+                                     (key,(page_num-1)*30)).fetchall()
+    return render(request, '_orders_board.html' if fragment else 'orders.html', columns=columns, counts=counts,
+                  status=status, page_num=page_num, count=sum(counts.get(k,0) for k in columns),
+                  has_more=any(counts.get(k,0)>page_num*30 for k in columns), page='orders')
 
 
 @app.get('/admin/orders/{oid:int}')
-def order_page(request: Request, oid: int):
+def order_page(request: Request, oid: int, fragment: bool = False):
     require_admin(request)
     with db.connect() as c:
         order = c.execute('SELECT * FROM orders WHERE id=?', (oid,)).fetchone()
         items = c.execute('SELECT * FROM order_items WHERE order_id=?', (oid,)).fetchall()
     if not order:
         raise HTTPException(404, 'Заказ не найден')
-    return render(request, 'order.html', order=order, items=items, page='orders')
+    return render(request, '_order_details.html' if fragment else 'order.html', order=order, items=items, page='orders')
 
 
 @app.post('/admin/orders/{oid:int}/status')
@@ -338,8 +343,12 @@ async def order_status(request: Request, oid: int):
     form = await form_data(request)
     try:
         db.set_status(oid, str(form.get('status')))
+        if request.headers.get('accept') == 'application/json':
+            return JSONResponse({'ok': True})
         return redirect(f'/admin/orders/{oid}', ok='Статус изменён. Уведомление поставлено в очередь.')
     except ValueError as exc:
+        if request.headers.get('accept') == 'application/json':
+            return JSONResponse({'detail': str(exc)}, status_code=400)
         return redirect(f'/admin/orders/{oid}', error=exc)
 
 
@@ -357,7 +366,7 @@ async def settings_save(request: Request):
             ('shop_name', 80, True), ('currency', 8, True), ('phone', 80, True),
             ('address', 400, True), ('hours', 300, True)]}
         values.update({k: str(db.parse_money(form.get(k))) for k in ('delivery_fee', 'free_delivery_from', 'minimum_order')})
-        values.update({k: '1' if form.get(k) == 'on' else '0' for k in ('orders_open', 'delivery_enabled')})
+        values.update({k: '1' if form.get(k) == 'on' else '0' for k in ('orders_open', 'delivery_enabled', 'auto_accept')})
         for k in ('card_on_receipt','delivery_districts'):
             values[k] = '1' if form.get(k) == 'on' else '0'
         percent = int(form.get('pickup_discount') or 0)

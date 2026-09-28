@@ -1,0 +1,11 @@
+<div class="orders-kanban" data-orders-board>
+{% for key,orders in columns.items() %}<section class="order-column" aria-label="{{ statuses[key] }}">
+<div class="column-heading"><h2>{{ statuses[key] }}</h2><span class="badge {{ key }}">{{ counts.get(key,0) }}</span></div>
+{% for o in orders %}<a class="kanban-card" href="/admin/orders/{{ o.id }}" data-order="{{ o.id }}">
+<div class="card-top"><strong>№ {{ o.id }}</strong><strong>{{ o.total|money(o.currency) }}</strong></div><p>{{ o.customer }}</p>
+<p class="muted">{{ 'Доставка' if o.method=='delivery' else 'Самовывоз' }}{% if o.district %} · {{ o.district }}{% endif %}</p>
+<p class="card-address">{{ o.address }}</p><small>{{ {'web':'Сайт','telegram':'Telegram','max':'MAX · чат','telegram_app':'Telegram · мини-приложение','max_app':'MAX · мини-приложение'}.get(o.channel,o.channel) }}</small>
+<small>{{ 'Наличными при получении' if o.payment_method=='cash' else 'Картой при получении' if o.payment_method=='card' else 'Онлайн · оплачено' if o.payment_status=='paid' else 'Онлайн · ' ~ o.payment_status }}</small>
+<div class="card-bottom"><time>{{ o.created_at }} UTC</time><span>Подробнее ↗</span></div></a>
+{% else %}<p class="empty">Заказов нет</p>{% endfor %}</section>{% endfor %}
+</div><div class="pagination">{% if page_num>1 %}<a href="/admin/orders?status={{ status|urlencode }}&page_num={{ page_num-1 }}">← Назад</a>{% endif %}<span>Страница {{ page_num }} · всего {{ count }}</span>{% if has_more %}<a href="/admin/orders?status={{ status|urlencode }}&page_num={{ page_num+1 }}">Далее →</a>{% endif %}</div>

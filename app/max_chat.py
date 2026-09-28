@@ -133,6 +133,7 @@ def confirm(c, sess, user, key, token, step, data):
     new_order(c,oid);notify_order(c,oid)
     order=c.execute('SELECT * FROM orders WHERE id=?',(oid,)).fetchone()
     queue(c,order,created=True)
+    db.auto_accept(c,oid)
     c.execute('DELETE FROM cart WHERE user_id=?',(user,))
     save(c,sess['id'],'',{})
     return oid

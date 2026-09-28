@@ -23,7 +23,7 @@ def shop(tmp_path, monkeypatch):
     monkeypatch.setattr(config, 'MAX_CA_BUNDLE', '')
     db.seed()
     with db.connect(True) as c:
-        c.executemany('UPDATE settings SET value=? WHERE key=?', [('1', 'orders_open'), ('0', 'minimum_order'), ('г. Москва, улица Примерная, 1', 'address')])
+        c.executemany('UPDATE settings SET value=? WHERE key=?', [('0', 'auto_accept'), ('1', 'orders_open'), ('0', 'minimum_order'), ('г. Москва, улица Примерная, 1', 'address')])
     return db
 
 

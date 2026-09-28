@@ -259,33 +259,43 @@ def place_order(user, token):
         notify_order(c,oid)
         from .customer_accounts import new_order
         new_order(c,oid)
+        auto_accept(c,oid)
         c.execute('DELETE FROM cart WHERE user_id=?', (user,))
         c.execute('DELETE FROM drafts WHERE user_id=?', (user,))
         return oid
 
 
-def set_status(oid, status):
-    with connect(True) as c:
-        order = c.execute('SELECT * FROM orders WHERE id=?', (oid,)).fetchone()
-        if not order:
-            raise ValueError('Заказ не найден')
-        if status not in TRANSITIONS[order['status']]:
-            raise ValueError('Недопустимый переход статуса. Обновите страницу.')
-        if status != 'cancelled' and order['payment_method'] == 'tbank' and order['payment_status'] != 'paid':
-            raise ValueError('Онлайн-оплата ещё не подтверждена банком')
-        c.execute('UPDATE orders SET status=? WHERE id=?', (status, oid))
-        if order['channel'] == 'telegram':
-            enqueue(c, order['user_id'], f'Заказ №{oid}: {STATUSES[status]}.')
-        else:
-            from .order_updates import queue_status
-            queue_status(c, dict(order) | {'status':status})
-        from .customer_accounts import queue
-        queue(c, dict(order) | {'status':status})
-        from .max_chat import queue as queue_max
-        queue_max(c, dict(order) | {'status':status})
-        if status == 'accepted':
-            from .integrations import queue_iiko
-            queue_iiko(c, oid)
+def set_status(oid, status, c=None):
+    if c is None:
+        with connect(True) as conn:
+            return set_status(oid, status, conn)
+    order = c.execute('SELECT * FROM orders WHERE id=?', (oid,)).fetchone()
+    if not order:
+        raise ValueError('Заказ не найден')
+    if status not in TRANSITIONS[order['status']]:
+        raise ValueError('Недопустимый переход статуса. Обновите страницу.')
+    if status != 'cancelled' and order['payment_method'] == 'tbank' and order['payment_status'] != 'paid':
+        raise ValueError('Онлайн-оплата ещё не подтверждена банком')
+    c.execute('UPDATE orders SET status=? WHERE id=?', (status, oid))
+    if order['channel'] == 'telegram':
+        enqueue(c, order['user_id'], f'Заказ №{oid}: {STATUSES[status]}.')
+    else:
+        from .order_updates import queue_status
+        queue_status(c, dict(order) | {'status':status})
+    from .customer_accounts import queue
+    queue(c, dict(order) | {'status':status})
+    from .max_chat import queue as queue_max
+    queue_max(c, dict(order) | {'status':status})
+    if status == 'accepted':
+        from .integrations import queue_iiko
+        queue_iiko(c, oid)
+
+
+def auto_accept(c, oid):
+    order = c.execute('SELECT * FROM orders WHERE id=?', (oid,)).fetchone()
+    if (settings(c).get('auto_accept') == '1' and order and order['status'] == 'new'
+            and (order['payment_method'] != 'tbank' or order['payment_status'] == 'paid')):
+        set_status(oid, 'accepted', c)
 
 
 def login_allowed(ip):

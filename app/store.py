@@ -182,6 +182,7 @@ async def checkout(request: Request):
                 notify_order(c, oid)
             from .customer_accounts import new_order
             new_order(c, oid)
+            db.auto_accept(c, oid)
             c.execute('DELETE FROM cart WHERE user_id=?', (user,))
         request.session.pop('checkout_key', None)
         return {'url': '/order/' + public_token}

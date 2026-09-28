@@ -221,7 +221,9 @@ def normalize_menu(menu, cfg, allow_empty=False):
     return {'name':str(menu.get('name') or ''),'source':source_key(cfg),'rows':rows,'skipped':skipped}
 
 
-def prepare_preview(c, data):
+def prepare_preview(c, data, replace_source=None):
+    if replace_source and replace_source.split('|')[0] != data['source'].split('|')[0]:
+        raise ValueError('Переключение допускается только между меню одной организации.')
     products = [dict(p) for p in c.execute('SELECT * FROM products')]
     matched = set()
     for row in data['rows']:
@@ -229,14 +231,14 @@ def prepare_preview(c, data):
         if len(existing)>1:
             raise ValueError(f'{row["name"]}: несколько местных карточек с одинаковыми UUID')
         old = existing[0] if existing else None
-        if old and old['iiko_source'] not in ('',data['source']):
+        if old and old['iiko_source'] not in ('',data['source'],replace_source):
             raise ValueError(f'{row["name"]}: карточка уже связана с другим меню/организацией')
         row['local_id'] = old['id'] if old else None
         row['old_price'] = old['price'] if old else None
         if old:
             matched.add(old['id'])
         row['photo_supported'] = photo_allowed(row['photo_url'])
-    data['hide_ids'] = [p['id'] for p in products if p['iiko_source']==data['source'] and p['id'] not in matched and (p['iiko_available'] or p['active'])]
+    data['hide_ids'] = [p['id'] for p in products if p['iiko_source'] in (data['source'],replace_source) and p['id'] not in matched and (p['iiko_available'] or p['active'])]
     return data
 
 
