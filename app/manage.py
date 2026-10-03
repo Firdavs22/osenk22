@@ -58,6 +58,9 @@ def backup(output=None):
             source.backup(dest)
         with zipfile.ZipFile(target, 'w', zipfile.ZIP_DEFLATED) as archive:
             archive.write(snapshot, 'shop.sqlite3')
+            key = config.DATA / 'integrations.key'
+            if key.exists():
+                archive.write(key, 'integrations.key')
             for path in config.MEDIA.glob('*.jpg'):
                 archive.write(path, 'media/' + path.name)
     if os.name != 'nt':
@@ -69,10 +72,33 @@ def backup(output=None):
 
 def main():
     parser = argparse.ArgumentParser(description='Управление магазином суши')
-    parser.add_argument('command', choices=['setup', 'init', 'seed', 'password', 'secret', 'backup', 'check'])
+    parser.add_argument('command', choices=['setup', 'init', 'seed', 'password', 'secret', 'backup', 'check', 'shop-profile', 'telegram-admin-add', 'iiko-menus', 'iiko-menu'])
+    parser.add_argument('--id', type=int, help='Telegram ID нового получателя')
+    parser.add_argument('--menu-id', help='ID внешнего меню iiko')
+    parser.add_argument('--price-category', help='UUID ценовой категории; без аргумента сохраняется текущая')
+    parser.add_argument('--apply', action='store_true', help='Применить переключение меню после предпросмотра')
     parser.add_argument('--output', help='Папка для резервных копий')
     args = parser.parse_args()
-    if args.command == 'setup':
+    if args.command in ('telegram-admin-add','iiko-menus','iiko-menu'):
+        import asyncio
+        from .operations import telegram_admin_add, iiko_menus
+        try:
+            db.init()
+            if args.command == 'telegram-admin-add':
+                telegram_admin_add(args.id)
+            else:
+                if args.command == 'iiko-menu' and not args.menu_id:
+                    raise ValueError('Укажите --menu-id из списка iiko-menus.')
+                asyncio.run(iiko_menus(args.menu_id if args.command=='iiko-menu' else None, args.price_category, args.apply))
+        except Exception as exc:
+            if type(exc) is ValueError:
+                parser.exit(1,str(exc)+'\n')
+            parser.exit(1,'Операция не завершена: '+type(exc).__name__+'. Проверьте доступы и диагностику iiko; секреты не выводились.\n')
+    elif args.command == 'shop-profile':
+        from .shop_policy import apply_profile
+        apply_profile()
+        print('Условия магазина обновлены: самовывоз −10%, доставка 300 ₽ / бесплатно от 1400 ₽, районы, контакты и реквизиты. Проверьте их в админке. Приём заказов и интеграции не включались.')
+    elif args.command == 'setup':
         setup()
     elif args.command == 'init':
         db.init()

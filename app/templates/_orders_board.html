@@ -1,0 +1,17 @@
+<div class="orders-kanban" data-orders-board>
+{% for key,orders in columns.items() %}<section class="order-column" aria-label="{{ statuses[key] }}">
+<div class="column-heading"><h2>{{ statuses[key] }}</h2><span class="badge {{ key }}">{{ counts.get(key,0) }}</span></div>
+{% for o in orders %}<article class="kanban-card">
+<div class="card-top"><strong>№ {{ o.id }}</strong><strong>{{ o.total|money(o.currency) }}</strong></div><p>{{ o.customer }}</p>
+<p class="card-counts">Блюд: {{ o.item_count }} · Заказов у покупателя: {{ o.customer_order_count }}</p>
+<p class="muted">{{ 'Доставка' if o.method=='delivery' else 'Самовывоз' }}{% if o.district %} · {{ o.district }}{% endif %}</p>
+<p class="card-address">{{ o.address }}</p><small>{{ {'web':'Сайт','telegram':'Telegram','max':'MAX · чат','telegram_app':'Telegram · мини-приложение','max_app':'MAX · мини-приложение'}.get(o.channel,o.channel) }}</small>
+<small>{{ 'Наличными при получении' if o.payment_method=='cash' else 'Картой при получении' if o.payment_method=='card' else 'Онлайн · оплачено' if o.payment_status=='paid' else 'Онлайн · ' ~ o.payment_status }}</small>
+<div class="card-bottom"><time>{{ o.created_at }} UTC</time><a href="/admin/orders/{{ o.id }}" data-order="{{ o.id }}">Подробнее ↗</a></div>
+{% set next_status = {'new':'accepted','accepted':'cooking','cooking':'ready','ready':'done'}.get(o.status) %}
+{% if next_status %}<form method="post" action="/admin/orders/{{ o.id }}/status" class="quick-status">
+<input type="hidden" name="csrf" value="{{ csrf }}"><input type="hidden" name="status" value="{{ next_status }}">
+<button type="submit" {% if o.payment_method=='tbank' and o.payment_status!='paid' %}disabled title="Ожидаем оплату"{% endif %}>{{ {'new':'Принять','accepted':'Далее → Готовится','cooking':('Готов к выдаче' if o.method=='pickup' else 'Передан курьеру'),'ready':'Завершить заказ'}[o.status] }}</button>
+</form>{% endif %}</article>
+{% else %}<p class="empty">Заказов нет</p>{% endfor %}</section>{% endfor %}
+</div><div class="pagination">{% if page_num>1 %}<a href="/admin/orders?status={{ status|urlencode }}&page_num={{ page_num-1 }}">← Назад</a>{% endif %}<span>Страница {{ page_num }} · всего {{ count }}</span>{% if has_more %}<a href="/admin/orders?status={{ status|urlencode }}&page_num={{ page_num+1 }}">Далее →</a>{% endif %}</div>
