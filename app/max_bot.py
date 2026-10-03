@@ -73,12 +73,12 @@ async def api(cfg, method, path, body=None, params=None):
 
 def navigation(cfg, info=False):
     origin = public_origin(cfg.get('public_url'))
-    menu_button = {'type':'link','text':'Мини-приложение','url':origin+'/mini/max'}
+    menu_button = {'type':'link','text':'🍣 Меню с фото','url':origin+'/mini/max'}
     username = cfg.get('bot_username','')
     if cfg.get('mini_app') and re.fullmatch(r'[A-Za-z0-9_]{1,80}',username):
-        menu_button = {'type':'open_app','text':'Мини-приложение','web_app':username}
+        menu_button = {'type':'open_app','text':'🍣 Меню с фото','web_app':username}
     s = db.settings()
-    text = f'{s["shop_name"]}\nВыбирайте блюда и оформляйте заказ прямо в чате.'
+    text = f'🍣 {s["shop_name"]}\nРоллы для уютного вечера, встречи с друзьями или вкусного обеда.\n\nВыбирайте доставку или самовывоз. История и статусы — в «Мои заказы».'
     if info:
         text = f'{s["shop_name"]}\nАдрес: {s["address"]}\nТелефон: {s["phone"]}\nВремя работы: {s["hours"]}'
     return {'text':text,'attachments':[{'type':'inline_keyboard','payload':{'buttons':[
@@ -124,7 +124,7 @@ def event_data(event, cfg=None):
         if not isinstance(raw_text,str):
             raise ValueError()
         value = callback_data.get('payload') if kind=='message_callback' else raw_text.strip().removeprefix('/')
-        commands = ('start','menu','cart','privacy','info','account','orders','stopupdates','logout','cancel')
+        commands = ('start','menu','cart','privacy','info','account','orders','stopupdates','logout','cancel','updates_on')
         if kind=='message_callback':
             if not isinstance(value,str) or not (value in commands or re.fullmatch(r'orders:[0-9]{1,18}',value) or (value!='text' and max_chat.handles(value))):
                 return None
@@ -200,6 +200,13 @@ async def process_event(cfg, event):
     body = navigation(cfg,event['action']=='info')
     action,user,chat,key = event['action'],event.get('user_id'),event['chat_id'],bot_key(cfg)
     persistent = False
+    account = accounts.resume('max',key,user,chat,enable=action=='updates_on') if action in ('account','updates_on') else None
+    if action=='updates_on':
+        action='account'
+        if account:
+            max_chat.notifications(key,user,True)
+    if account:
+        action = 'orders'
     if action=='account':
         max_chat.reset(key,user)
         accounts.begin_contact('max',key,user,chat)
@@ -226,6 +233,11 @@ async def process_event(cfg, event):
             persistent=True
         else:
             body['text']='Заказов пока нет.' if linked else 'Для заказов с сайта подтвердите свой номер: /account.'
+        if account:
+            body['text'] = ('С возвращением! Статусы новых заказов с вашим номером придут автоматически.\n\n'
+                            if account['notifications'] else 'С возвращением! Уведомления отключены.\n\n') + body['text']
+            if not account['notifications']:
+                body['attachments'][0]['payload']['buttons'].insert(0,[max_chat.button('Включить уведомления','updates_on')])
     elif action in ('stopupdates','logout'):
         accounts.stop('max',key,user,logout=action=='logout')
         max_chat.reset(key,user)

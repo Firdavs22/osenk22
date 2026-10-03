@@ -49,7 +49,9 @@ async def show_menu(message):
     url = app_url('telegram')
     if url:
         markup.inline_keyboard.insert(0,[InlineKeyboardButton(text='🍣 Открыть меню с фото',web_app=WebAppInfo(url=url))])
-    await screen(message,'🍣 Выберите категорию' + (' или откройте мини-приложение. Корзина мини-приложения ведётся отдельно от корзины чата.' if url else ''),reply_markup=markup)
+    markup.inline_keyboard.append([InlineKeyboardButton(text='📦 Мои заказы',callback_data='orders'),
+                                   InlineKeyboardButton(text='👤 Личный кабинет',callback_data='account')])
+    await screen(message,'🍣 Что попробуем сегодня? Выберите категорию.',reply_markup=markup)
 
 
 async def show_cart(message, user):
@@ -83,6 +85,16 @@ async def show_orders(message, user, before=0):
 
 
 async def show_account(message, user):
+    account = accounts.resume('telegram', message.bot.id, user, message.chat.id)
+    if account:
+        markup = home_keyboard()
+        if not account['notifications']:
+            markup.inline_keyboard.insert(0,[InlineKeyboardButton(text='Включить уведомления', callback_data='updates_on')])
+        await screen(message, 'С возвращением! Ваши заказы — здесь.\n' +
+                     ('Статусы следующих заказов с вашим номером придут автоматически.' if account['notifications']
+                      else 'Уведомления отключены. Вы можете включить их кнопкой ниже.'), markup)
+        await show_orders(message,user)
+        return
     db.save_draft(user,None,{})
     accounts.begin_contact('telegram', message.bot.id, user, message.chat.id)
     await screen(message, accounts.CONTACT_PROMPT, ReplyKeyboardMarkup(
@@ -142,10 +154,13 @@ async def commands(message: Message):
         return
     accounts.cancel_contact('telegram',message.bot.id,user)
     db.save_draft(user, None, {})
+    if command == '/menu':
+        await show_menu(message)
+        return
     await screen(message, 'Оформление отменено. Корзина сохранена.' if command == '/cancel' else
-                         f'Добро пожаловать в {db.settings()["shop_name"]}! 🍣\nВыберите блюда — мы приготовим ваш заказ.',
-                         reply_markup=ReplyKeyboardRemove())
-    await show_menu(message)
+                         f'🍣 {db.settings()["shop_name"]}\nРоллы для уютного вечера, встречи с друзьями или вкусного обеда.\n\n'
+                         'Выбирайте блюда с доставкой или самовывозом. Ваши заказы и их статусы — в «Мои заказы».',
+                         reply_markup=home_keyboard())
 
 
 @dp.callback_query()
@@ -159,7 +174,10 @@ async def callbacks(call: CallbackQuery):
     if action!='account':
         accounts.cancel_contact('telegram',message.bot.id,user)
     try:
-        if action == 'menu':
+        if action == 'updates_on':
+            accounts.resume('telegram',message.bot.id,user,message.chat.id,enable=True)
+            await show_account(message,user)
+        elif action == 'menu':
             db.save_draft(user, None, {})
             await show_menu(message)
         elif action.startswith('cat:'):
@@ -445,6 +463,11 @@ async def main():
             await bot.delete_webhook(drop_pending_updates=False)
             url = app_url('telegram')
             await bot.set_chat_menu_button(menu_button=MenuButtonWebApp(text='Меню',web_app=WebAppInfo(url=url)) if url else MenuButtonCommands())
+            try:
+                await bot.set_my_description(description=f'{db.settings()["shop_name"]} — роллы, суши и сеты с доставкой и самовывозом. Выбирайте блюда, оформляйте заказ и следите за его статусом здесь. История заказов всегда под рукой.')
+                await bot.set_my_short_description(short_description='Роллы, суши и сеты. Доставка и самовывоз. Меню и ваши заказы — в боте.')
+            except TelegramAPIError:
+                log.warning('Не удалось обновить описание бота; продолжаем обработку заказов')
             await bot.set_my_commands([BotCommand(command='menu', description='Меню'),
                                        BotCommand(command='account', description='Личный кабинет по номеру телефона'),
                                        BotCommand(command='orders', description='Мои заказы'),

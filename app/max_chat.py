@@ -235,7 +235,7 @@ def dispatch(c,cfg,event,sess,user,key,step,data):
         return preview(c,sid,user,data,cfg)
     if action.startswith('confirm:'):
         oid=confirm(c,sess,user,key,action.split(':')[1],step,data)
-        return body(f'Заказ №{oid} получен! Ожидайте подтверждения магазина. Подробности придут отдельным сообщением; история — /orders.',home())
+        return body(f'Заказ №{oid} получен! Спасибо, что выбрали нас! Подробности придут отдельным сообщением; история — /orders.',home())
     if action in ('text','contact'):
         text=unseal(event['text']) if event.get('text') else ''
         if step=='customer':
@@ -269,7 +269,7 @@ def dispatch(c,cfg,event,sess,user,key,step,data):
 def queue(c, order, created=False):
     recipient=c.execute('SELECT * FROM max_order_recipients WHERE order_id=?',(order['id'],)).fetchone()
     if not recipient or (not created and not recipient['notifications']):return
-    text=('Спасибо! Заказ получен, ожидайте подтверждения магазина.\n\n'+db.order_summary(order,
+    text=('Спасибо! Заказ получен, спасибо, что выбрали нас!\n\n'+db.order_summary(order,
         c.execute('SELECT * FROM order_items WHERE order_id=?',(order['id'],)).fetchall())) if created else f'Заказ №{order["id"]}: {db.STATUSES[order["status"]]}.'
     text+='\nИстория: /orders. Отключить статусы: /stopupdates.'
     for part,offset in enumerate(range(0,len(text),3500)):

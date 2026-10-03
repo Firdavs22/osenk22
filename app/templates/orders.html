@@ -2,7 +2,7 @@
 <link rel="stylesheet" href="/static/orders.css">
 <header><div><p class="eyebrow">КУХНЯ И ДОСТАВКА</p><h1>Заказы</h1><p class="muted">Автопринятие {{ 'включено' if shop.auto_accept == '1' else 'выключено' }} · <a href="/admin/settings">Настроить</a></p></div><button type="button" id="orders-refresh">Обновить ↻</button></header>
 <div class="tabs"><a class="{{ 'active' if not status }}" href="/admin/orders">Все</a>{% for key,label in statuses.items() %}<a class="{{ 'active' if status==key }}" href="/admin/orders?status={{ key }}">{{ label }}</a>{% endfor %}</div>
-<p class="hint" id="orders-sync" role="status">Обновление каждые 10 секунд. Подробнее — нажмите на заказ.</p>
+<p class="hint" id="orders-sync" role="status">Обновление каждые 10 секунд. Состав и адрес — по кнопке «Подробнее».</p>
 <div id="orders-board">{% include '_orders_board.html' %}</div>
 <dialog id="order-modal" aria-label="Подробности заказа"><button type="button" class="order-close" aria-label="Закрыть">Закрыть ×</button><p id="order-error" role="alert"></p><div id="order-content"></div></dialog>
 <script src="/static/orders.js" defer></script>

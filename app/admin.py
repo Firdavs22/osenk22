@@ -320,11 +320,32 @@ def orders_page(request: Request, status: str = '', page_num: int = 1, fragment:
     with db.connect() as c:
         counts = dict(c.execute('SELECT status,count(*) FROM orders GROUP BY status').fetchall())
         for key in ([status] if status else db.STATUSES):
-            columns[key] = c.execute('SELECT * FROM orders WHERE status=? ORDER BY id DESC LIMIT 30 OFFSET ?',
+            columns[key] = c.execute('''SELECT o.*,
+                (SELECT COALESCE(sum(quantity),0) FROM order_items WHERE order_id=o.id) item_count,
+                (SELECT count(*) FROM orders customer_orders WHERE
+                    (o.phone_key<>'' AND customer_orders.phone_key=o.phone_key)
+                    OR (o.phone_key='' AND customer_orders.id=o.id)) customer_order_count
+                FROM orders o WHERE status=? ORDER BY id DESC LIMIT 30 OFFSET ?''',
                                      (key,(page_num-1)*30)).fetchall()
     return render(request, '_orders_board.html' if fragment else 'orders.html', columns=columns, counts=counts,
                   status=status, page_num=page_num, count=sum(counts.get(k,0) for k in columns),
                   has_more=any(counts.get(k,0)>page_num*30 for k in columns), page='orders')
+
+
+@app.get('/admin/order-feed')
+def order_feed(request: Request, after: int | None = None):
+    require_admin(request)
+    with db.connect() as c:
+        latest = c.execute('SELECT COALESCE(max(id),0) FROM orders').fetchone()[0]
+        rows = [] if after is None else c.execute('SELECT id FROM orders WHERE id>? ORDER BY id LIMIT 50',
+                                                  (max(0,after),)).fetchall()
+        pending = c.execute("SELECT count(*) FROM orders WHERE status='new'").fetchone()[0]
+    return {'cursor':rows[-1]['id'] if rows else latest, 'orders':[r['id'] for r in rows], 'pending':pending}
+
+
+@app.get('/admin/notifications-worker.js')
+def notifications_worker():
+    return FileResponse(config.ROOT / 'app/static/notifications-worker.js',media_type='text/javascript')
 
 
 @app.get('/admin/orders/{oid:int}')

@@ -19,6 +19,7 @@ from starlette.datastructures import UploadFile
 from . import config, db
 from .integrations import iiko_call, uuid_field
 from .vault import get_config
+from .catalog_labels import clean_label, label_key, unique_labels
 
 router = APIRouter()
 
@@ -146,7 +147,7 @@ def normalize_menu(menu, cfg, allow_empty=False):
         raise ValueError('Меню с расписанием требует поддержки расписаний. Выберите меню без временных ограничений.')
     rows, skipped, seen = [], [], set()
     for category in menu['itemCategories']:
-        category_name = str(category.get('name') or '').strip()
+        category_name = clean_label(category.get('name'))
         if not category_name or len(category_name)>50:
             raise ValueError('Название категории должно содержать от 1 до 50 символов')
         for item in category.get('items') or []:
@@ -198,7 +199,7 @@ def normalize_menu(menu, cfg, allow_empty=False):
                     allergens = ', '.join(str(a.get('name') or '') for a in item.get('allergens') or [] if a.get('name') and not a.get('isDeleted'))
                     if allergens:
                         description += '\nАллергены по данным iiko: '+allergens
-                    labels = ', '.join(dict.fromkeys(str(t['name']) for t in item.get('labels') or [] if t.get('name')))
+                    labels = ', '.join(unique_labels(t.get('name') if isinstance(t,dict) else t for t in item.get('labels') or []))
                     if len(description)>1000 or len(labels)>160:
                         raise ValueError('Описание или теги слишком длинные для карточки')
                     record = {'iiko_id':product_id,'iiko_size':size_id,'name':name,'category':category_name,
@@ -265,7 +266,10 @@ def diagnostic(menu, cfg):
             samples.append({**{k:item.get(k) for k in ('itemId','name','type','orderItemType','canBeDivided','canSetOpenPrice','isMarked')},
                             'category':category.get('name'),'categoryHasSchedule':bool(category.get('schedules') or category.get('scheduleId')),
                             'sizes':sizes})
-    return {'selected':{k:cfg.get(k) for k in ('organization_id','external_menu','price_category')},
+    return {'categories':[{'id':cat.get('id'),'name':cat.get('name'),'iikoGroupId':cat.get('iikoGroupId'),
+                          'items':len(cat.get('items') or []),'isHidden':bool(cat.get('isHidden'))}
+                         for cat in menu.get('itemCategories') or []],
+            'selected':{k:cfg.get(k) for k in ('organization_id','external_menu','price_category')},
             'formatVersion':menu.get('formatVersion'),'menuId':menu.get('id'),
             'menuHasSchedule':bool(menu.get('intervals')), 'counts':dict(counts),'first30Items':samples}
 
@@ -300,9 +304,14 @@ def apply_rows(c, data):
     if not data['rows']:
         raise ValueError('Пустое меню: каталог сохранён без изменений.')
     counts = {'created':0,'updated':0,'hidden':0,'photos':0}
+    categories = {}
+    for cat in c.execute('SELECT id,name FROM categories ORDER BY id'):
+        categories.setdefault(label_key(cat['name']),cat['id'])
     for row in data['rows']:
-        c.execute('INSERT OR IGNORE INTO categories(name) VALUES (?)',(row['category'],))
-        category = c.execute('SELECT id FROM categories WHERE name=?',(row['category'],)).fetchone()[0]
+        key = label_key(row['category'])
+        if key not in categories:
+            categories[key] = c.execute('INSERT INTO categories(name) VALUES (?)',(row['category'],)).lastrowid
+        category = categories[key]
         pid = row['local_id']
         if pid:
             old = c.execute('SELECT * FROM products WHERE id=?',(pid,)).fetchone()

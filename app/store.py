@@ -64,11 +64,17 @@ def storefront(request: Request, platform: str = ''):
     with db.connect() as c:
         slides = c.execute('SELECT * FROM slides WHERE active=1 ORDER BY position,id').fetchall()
     products = [dict(p) for p in db.products(active=True)]
+    from .catalog_labels import unique_labels, label_key
+    labels = unique_labels(t for p in products for t in p['tags'].split(','))
+    canonical = {label_key(t): t for t in labels}
+    for p in products:
+        p['tags'] = ', '.join(canonical[label_key(t)] for t in unique_labels(p['tags'].split(',')))
     # Only customer-facing catalog fields cross the public boundary.
     public = [{k: p[k] for k in ('id', 'name', 'description', 'ingredients', 'weight', 'price', 'photo', 'category_id', 'tags', 'allergens', 'nutrition', 'storage')} for p in products]
     from .shop_policy import DISTRICTS
-    return render(request, 'store.html', products=public, categories=db.categories(), slides=slides,
-                  tags=list(dict.fromkeys(t.strip() for p in products for t in p['tags'].split(',') if t.strip())),
+    available_categories = {p['category_id'] for p in products}
+    return render(request, 'store.html', products=public, categories=[c for c in db.categories() if c['id'] in available_categories], slides=slides,
+                  tags=labels,
                   online=payment_enabled(), districts=DISTRICTS, cart=cart_state(visitor(request)))
 
 

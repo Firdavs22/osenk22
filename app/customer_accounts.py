@@ -115,6 +115,20 @@ def get_account(platform, bot_key, user_id, c):
                      (platform, str(bot_key), user_id)).fetchone()
 
 
+def resume(platform, bot_key, user_id, chat_id, enable=False):
+    """Reopen an authenticated messenger account; never trust a typed phone."""
+    with db.connect(True) as c:
+        account = get_account(platform, bot_key, user_id, c)
+        if not account:
+            return None
+        c.execute('UPDATE customer_accounts SET chat_id=? WHERE id=?', (chat_id, account['id']))
+        if enable:
+            c.execute('UPDATE customer_accounts SET notifications=1 WHERE id=?', (account['id'],))
+        c.execute('DELETE FROM customer_contact_requests WHERE platform=? AND bot_key=? AND user_id=?',
+                  (platform, str(bot_key), user_id))
+        return dict(get_account(platform, bot_key, user_id, c))
+
+
 def history(platform, bot_key, user_id, before=0, compact=False):
     """Keyset pagination, re-authorized on every request; no phone in callback payloads."""
     with db.connect() as c:
@@ -168,7 +182,7 @@ def queue(c, order, event='status'):
                 (order['id'],account['chat_id'],int(account['bot_key']))).fetchone() and event=='status':
             continue
         if event=='created':
-            text = 'Заказ получен. Ожидайте подтверждения магазина.\n\n' + db.order_summary(order,
+            text = 'Заказ получен. Спасибо, что выбрали нас!\n\n' + db.order_summary(order,
                 c.execute('SELECT * FROM order_items WHERE order_id=?',(order['id'],)).fetchall())
         else:
             text = f'Заказ №{order["id"]}: {db.STATUSES[order["status"]]}.'

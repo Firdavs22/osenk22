@@ -253,7 +253,7 @@ def place_order(user, token):
                       [(oid, p['name'], p['price'], p['quantity'], p['id'], p['iiko_id'], p['iiko_size']) for p in q['items']])
         order = c.execute('SELECT * FROM orders WHERE id=?', (oid,)).fetchone()
         summary = order_summary(order, q['items'])
-        enqueue(c, user, 'Спасибо! Заказ получен, ожидайте подтверждения магазина.\n\n' + summary)
+        enqueue(c, user, 'Спасибо! Мы получили ваш заказ.\n\n' + summary)
         c.execute('UPDATE orders SET notified=0 WHERE id=?',(oid,))
         from .store import notify_order
         notify_order(c,oid)

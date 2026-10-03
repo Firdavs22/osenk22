@@ -11,7 +11,7 @@
     return html;
   }
   async function refresh(force = false) {
-    if (refreshing || (!force && (document.hidden || modal.open))) return;
+    if (refreshing || board.querySelector('[data-busy]') || (!force && (document.hidden || modal.open))) return;
     refreshing = true;
     try {
       const url = new URL(location.href); url.searchParams.set('fragment', 'true');
@@ -40,18 +40,26 @@
   modal.querySelector('.order-close').addEventListener('click', () => modal.close());
   modal.addEventListener('close', () => { ++loading; current = null; if (opener?.isConnected) opener.focus(); });
   modal.addEventListener('click', event => { if (event.target === modal) { const r = modal.getBoundingClientRect(); if (event.clientX < r.left || event.clientX > r.right || event.clientY < r.top || event.clientY > r.bottom) modal.close(); } });
-  content.addEventListener('submit', async event => {
+  async function changeStatus(event) {
     const form = event.target; if (!form.matches('form[action$="/status"]')) return;
-    event.preventDefault(); const id = current; error.textContent = '';
-    const buttons = [...content.querySelectorAll('button')]; buttons.forEach(b => b.disabled = true);
+    event.preventDefault(); const id = current; error.textContent = ''; form.dataset.busy = 'true';
+    const quick = form.classList.contains('quick-status');
+    const buttons = [...form.querySelectorAll('button')]; buttons.forEach(b => b.disabled = true);
     try {
       const response = await fetch(form.action, {method:'POST', body:new FormData(form), headers:{Accept:'application/json'}});
       if (response.redirected || !(response.headers.get('content-type') || '').includes('application/json')) throw new Error('Войдите в админку заново.');
       const result = await response.json(); if (!response.ok) throw new Error(result.detail || 'Не удалось изменить статус.');
-      if (current === id) await details(id); await refresh(true);
-    } catch (e) { if (current === id) { error.textContent = e.message; await details(id); } }
-    finally { buttons.forEach(b => b.disabled = false); }
-  });
+      delete form.dataset.busy;
+      if (!quick && current === id) await details(id); await refresh(true);
+    } catch (e) {
+      if (quick) { delete form.dataset.busy; await refresh(true); sync.textContent = e.message; }
+      else if (current === id) { error.textContent = e.message; await details(id); }
+    }
+    finally { delete form.dataset.busy; buttons.forEach(b => b.disabled = false); }
+  }
+  content.addEventListener('submit', changeStatus);
+  board.addEventListener('submit', changeStatus);
+  window.addEventListener('orders-arrived', () => refresh());
   document.querySelector('#orders-refresh').addEventListener('click', () => refresh(true));
   setInterval(refresh, 10000);
 })();

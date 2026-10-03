@@ -10,3 +10,5 @@ dialog{background:var(--panel);color:var(--ink);border:1px solid #4b3931;border-
 .site-footer nav{display:flex;flex-direction:column;gap:13px}.site-footer h2{font-size:16px;letter-spacing:0;margin-bottom:16px}.site-footer p{overflow-wrap:anywhere}.site-footer nav a{font-size:13px;line-height:1.5}.site-footer a:hover{color:#ef7464}.legal-document{max-width:900px;line-height:1.8}.legal-document h1{font-size:clamp(28px,5vw,46px)}.legal-document .preline{white-space:pre-line;overflow-wrap:anywhere;margin-bottom:32px}.site-footer>div:last-child{min-width:0}@media(max-width:420px){.site-footer nav a{font-size:14px}}
 
 html[data-mini-app="telegram"] body, html[data-mini-app="max"] body { padding-bottom: env(safe-area-inset-bottom, 0px); }
+
+.category-tabs,.tag-tabs{scrollbar-width:none}.category-tabs::-webkit-scrollbar,.tag-tabs::-webkit-scrollbar{display:none}
