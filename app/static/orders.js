@@ -11,12 +11,12 @@
     return html;
   }
   async function refresh(force = false) {
-    if (refreshing || board.querySelector('[data-busy]') || (!force && (document.hidden || modal.open))) return;
+    if (refreshing || board.querySelector('[data-busy], .dragging') || (!force && (document.hidden || modal.open))) return;
     refreshing = true;
     try {
       const url = new URL(location.href); url.searchParams.set('fragment', 'true');
       const html = await fragment(url, '[data-orders-board]');
-      if (!force && modal.open) return;
+      if ((!force && modal.open) || board.querySelector('.dragging')) return;
       const scroll = board.querySelector('.orders-kanban')?.scrollLeft || 0;
       const focused = board.contains(document.activeElement) ? document.activeElement.dataset.order : null;
       board.innerHTML = html; board.querySelector('.orders-kanban').scrollLeft = scroll;

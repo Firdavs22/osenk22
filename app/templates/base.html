@@ -10,4 +10,4 @@
 {% if error %}<div class="alert error" role="alert">{{ error }}</div>{% endif %}{% if ok %}<div class="alert success" role="status">{{ ok }}</div>{% endif %}
 {% block content %}{% endblock %}
 {% if logged_in %}<footer>{{ shop.shop_name }} · Время заказов указано в UTC · <a href="/admin">Обновить данные</a></footer>{% endif %}
-</main>{% if logged_in %}<script src="/static/admin-notifications.js" defer></script>{% endif %}</body></html>
+</main>{% if logged_in %}<script src="/static/admin-notifications.js" defer></script>{% endif %}<script src="/static/horizontal-scroll.js" defer></script></body></html>

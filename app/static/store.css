@@ -11,4 +11,5 @@ dialog{background:var(--panel);color:var(--ink);border:1px solid #4b3931;border-
 
 html[data-mini-app="telegram"] body, html[data-mini-app="max"] body { padding-bottom: env(safe-area-inset-bottom, 0px); }
 
-.category-tabs,.tag-tabs{scrollbar-width:none}.category-tabs::-webkit-scrollbar,.tag-tabs::-webkit-scrollbar{display:none}
+.category-tabs,.tag-tabs{scrollbar-width:none;overflow-x:auto;max-width:100%;cursor:grab;overscroll-behavior-x:contain}.category-tabs::-webkit-scrollbar,.tag-tabs::-webkit-scrollbar{display:none}
+.category-tabs button,.tag-tabs button{flex:0 0 auto}.category-tabs.dragging,.tag-tabs.dragging{cursor:grabbing;user-select:none}.category-tabs.dragging button,.tag-tabs.dragging button{cursor:grabbing}
