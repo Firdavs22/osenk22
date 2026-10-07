@@ -1,5 +1,5 @@
 {% extends 'store_base.html' %}{% block title %}Заказ №{{ order.id }}{% endblock %}{% block content %}
-<main class="order-result">
+<main class="order-result">{% if ecommerce %}<div id="order-ecommerce" data-order='{{ ecommerce|tojson }}' hidden></div>{% endif %}
 <div id="order-tracking" data-url="/api/order/{{ order.public_token }}/status" data-version='{{ tracking|tojson }}' hidden></div>
 <script src="/static/order-status.js" defer></script><p class="eyebrow">{{ shop.shop_name }}</p><h1>Заказ №{{ order.id }}</h1><p class="order-state" aria-live="polite">{{ statuses[order.status] }}</p>
 <p>{{ {'new':'Спасибо! Мы получили ваш заказ.', 'accepted':'Магазин принял заказ.', 'cooking':'Ваш заказ готовится.', 'ready':('Заказ готов к самовывозу.' if order.method == 'pickup' else 'Заказ готов или передан курьеру. Время прибытия уточните у магазина.'), 'done':'Заказ выполнен. Спасибо!', 'cancelled':'Заказ отменён. Если вы оплатили его онлайн, уточните возврат у магазина.'}[order.status] }}</p>

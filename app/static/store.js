@@ -65,6 +65,7 @@
     quote = null; $('.checkout-submit').disabled = true;
     cartQueue = cartQueue.then(async () => {
       const cart = await api('/api/cart', {id, delta}); renderCart(cart);
+      if (delta > 0) window.shopAnalytics?.goal('add_to_cart');
       if (announce) toast('Добавлено в корзину');
       if (cartDialog.open && cart.items.length) await updateQuote();
     }).catch(e => toast(e.message));
@@ -74,10 +75,10 @@
     const add = event.target.closest('[data-add]');
     if (add) { add.disabled = true; await mutate(Number(add.dataset.add), 1, true); add.disabled = false; }
     const detail = event.target.closest('[data-detail]');
-    if (detail) { $('#product-content').replaceChildren($('#detail-' + detail.dataset.detail).content.cloneNode(true)); show($('#product-dialog')); }
+    if (detail) { window.shopAnalytics?.goal('product_view'); $('#product-content').replaceChildren($('#detail-' + detail.dataset.detail).content.cloneNode(true)); show($('#product-dialog')); }
     const close = event.target.closest('[data-close]'); if (close) close.closest('dialog').close();
     if (event.target.closest('[data-open-cart]')) {
-      try { await cartQueue; renderCart(await api('/api/cart')); show(cartDialog); if (!form.hidden) await updateQuote(); }
+      try { await cartQueue; renderCart(await api('/api/cart')); show(cartDialog); window.shopAnalytics?.goal('begin_checkout'); if (!form.hidden) await updateQuote(); }
       catch (e) { toast(e.message); }
     }
   });

@@ -272,6 +272,8 @@ async def worker():
     while True:
         try:
             await tick()
+            from .iiko_status import tick as sync_statuses
+            await sync_statuses()
         except Exception as exc:
             log.warning('Integration worker: %s', type(exc).__name__)
         await asyncio.sleep(3)

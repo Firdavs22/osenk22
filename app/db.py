@@ -265,14 +265,20 @@ def place_order(user, token):
         return oid
 
 
-def set_status(oid, status, c=None):
+def set_status(oid, status, c=None, *, from_iiko=False):
     if c is None:
         with connect(True) as conn:
-            return set_status(oid, status, conn)
+            return set_status(oid, status, conn, from_iiko=from_iiko)
     order = c.execute('SELECT * FROM orders WHERE id=?', (oid,)).fetchone()
     if not order:
         raise ValueError('Заказ не найден')
-    if status not in TRANSITIONS[order['status']]:
+    if from_iiko:
+        stages = ['new','accepted','cooking','ready','done']
+        if order['status'] in ('done','cancelled') or status == order['status']:
+            return
+        if status != 'cancelled' and (status not in stages or stages.index(status) <= stages.index(order['status'])):
+            return
+    elif status not in TRANSITIONS[order['status']]:
         raise ValueError('Недопустимый переход статуса. Обновите страницу.')
     if status != 'cancelled' and order['payment_method'] == 'tbank' and order['payment_status'] != 'paid':
         raise ValueError('Онлайн-оплата ещё не подтверждена банком')
@@ -286,7 +292,7 @@ def set_status(oid, status, c=None):
     queue(c, dict(order) | {'status':status})
     from .max_chat import queue as queue_max
     queue_max(c, dict(order) | {'status':status})
-    if status == 'accepted':
+    if status == 'accepted' and not from_iiko:
         from .integrations import queue_iiko
         queue_iiko(c, oid)
 

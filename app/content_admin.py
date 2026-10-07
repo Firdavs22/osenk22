@@ -19,7 +19,7 @@ def appearance(request: Request):
     require_admin(request)
     with db.connect() as c:
         slides = c.execute('SELECT * FROM slides ORDER BY position,id').fetchall()
-    return render(request, 'appearance.html', slides=slides, page='appearance')
+    return render(request, 'appearance.html', slides=slides, categories=db.categories(), page='appearance')
 
 
 @router.post('/admin/appearance')
@@ -58,8 +58,9 @@ async def save_appearance(request: Request):
 @router.post('/admin/slides')
 async def save_slide(request: Request):
     from .admin import field, form_data, redirect, save_photo
-    form = await form_data(request)
+    form = await form_data(request, max_files=2)
     filename = None
+    mobile_filename = None
     try:
         sid = int(form.get('id') or 0)
         with db.connect() as c:
@@ -74,6 +75,16 @@ async def save_slide(request: Request):
         if not re.fullmatch(r'#(?:catalog|category-\d+)',target):
             raise ValueError('Кнопка может вести на #catalog или #category-ID')
         title, subtitle, button = field(form,'title',100),field(form,'subtitle',400,False),field(form,'button',40)
+        layout = field(form,'layout',20,False) or 'split'
+        align = field(form,'text_align',10,False) or 'left'
+        if layout not in ('split','background','image') or align not in ('left','center','right'):
+            raise ValueError('Выберите оформление и положение текста')
+        colors = [field(form,k,7,False) or default for k,default in [('text_color','#ffffff'),('button_color','#ad3529'),('button_text_color','#ffffff')]]
+        if any(not re.fullmatch(r'#[0-9a-fA-F]{6}',color) for color in colors):
+            raise ValueError('Выберите цвет в формате #RRGGBB')
+        overlay = int(form.get('overlay') or 0)
+        if not 0 <= overlay <= 80:
+            raise ValueError('Затемнение должно быть от 0 до 80%')
         position = int(form.get('position') or 0)
         photo = old['photo'] if old else ''
         if form.get('remove_photo'):
@@ -82,6 +93,12 @@ async def save_slide(request: Request):
         if upload and getattr(upload,'filename',''):
             filename = await save_photo(upload)
             photo = filename
+        mobile_photo = old['mobile_photo'] if old else ''
+        if form.get('remove_mobile_photo'): mobile_photo = ''
+        upload = form.get('mobile_photo')
+        if upload and getattr(upload,'filename',''):
+            mobile_filename = await save_photo(upload)
+            mobile_photo = mobile_filename
         values = (title,subtitle,button,target,photo,position,int(form.get('active')=='on'))
         with db.connect(True) as c:
             if sid:
@@ -89,11 +106,15 @@ async def save_slide(request: Request):
             else:
                 if c.execute('SELECT count(*) FROM slides').fetchone()[0] >= 12:
                     raise ValueError('Максимум 12 слайдов')
-                c.execute('INSERT INTO slides(title,subtitle,button,target,photo,position,active) VALUES (?,?,?,?,?,?,?)',values)
+                sid = c.execute('INSERT INTO slides(title,subtitle,button,target,photo,position,active) VALUES (?,?,?,?,?,?,?)',values).lastrowid
+            c.execute('UPDATE slides SET layout=?,mobile_photo=?,text_align=?,text_color=?,button_color=?,button_text_color=?,overlay=?,show_text=?,show_button=? WHERE id=?',
+                      (layout,mobile_photo,align,*colors,overlay,int(form.get('show_text')=='on' or 'layout' not in form),int(form.get('show_button')=='on' or 'layout' not in form),sid))
         return redirect('/admin/appearance',ok='Слайд сохранён')
     except ValueError as exc:
         if filename:
             (config.MEDIA/filename).unlink(missing_ok=True)
+        if mobile_filename:
+            (config.MEDIA/mobile_filename).unlink(missing_ok=True)
         return redirect('/admin/appearance',error=exc)
     finally:
         await form.close()
@@ -114,7 +135,7 @@ def integrations_page(request: Request):
     if 'admin_ids' not in configs['telegram']:
         configs['telegram']['admin_ids'] = config.ADMIN_IDS
     with db.connect() as c:
-        jobs = c.execute('SELECT order_id,state,error,attempts FROM iiko_jobs ORDER BY order_id DESC LIMIT 30').fetchall()
+        jobs = c.execute('SELECT order_id,state,error,attempts,sync_status,sync_at,sync_error FROM iiko_jobs ORDER BY order_id DESC LIMIT 30').fetchall()
         payments = c.execute('SELECT order_id,state,error,attempts FROM payments ORDER BY order_id DESC LIMIT 30').fetchall()
         image_counts = dict(c.execute('SELECT state,count(*) FROM menu_images GROUP BY state').fetchall())
         sync = c.execute('SELECT * FROM menu_sync WHERE id=1').fetchone()
@@ -248,4 +269,5 @@ async def check_job(request: Request, oid: int):
     await form_data(request)
     with db.connect(True) as c:
         c.execute("UPDATE iiko_jobs SET next_try=0,attempts=0 WHERE order_id=? AND state IN ('pending','checking')",(oid,))
+        c.execute("UPDATE iiko_jobs SET sync_next=0 WHERE order_id=? AND state='sent'",(oid,))
     return redirect('/admin/integrations',ok='Проверка iiko запланирована')

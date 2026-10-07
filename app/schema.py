@@ -105,6 +105,8 @@ def migrate(c):
         for row in c.execute("SELECT id,phone FROM orders WHERE phone_key=''").fetchall():
             c.execute('UPDATE orders SET phone_key=? WHERE id=?',(normalize_phone(row['phone']),row['id']))
     c.executemany('INSERT OR IGNORE INTO settings VALUES (?,?)', DEFAULTS.items())
+    from .reporting import migrate as migrate_reporting
+    migrate_reporting(c)
     if not c.execute('SELECT 1 FROM slides LIMIT 1').fetchone():
         c.execute('INSERT INTO slides(title,subtitle) VALUES (?,?)',
                   ('У каждого вечера свой вкус.', 'Любимые роллы, нежный лосось и сеты для тех, кто рядом. Выбирайте — мы приготовим.'))

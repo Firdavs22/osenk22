@@ -13,6 +13,18 @@ from . import config, db
 router = APIRouter()
 
 
+@router.get('/banner-styles.css')
+def banner_styles():
+    from fastapi.responses import Response
+    rules = []
+    with db.connect() as c:
+        for s in c.execute('SELECT * FROM slides WHERE active=1'):
+            colors = [s[k] if re.fullmatch(r'#[a-fA-F0-9]{6}',s[k]) else '#ffffff' for k in ('text_color','button_color','button_text_color')]
+            overlay = max(0,min(80,int(s['overlay'])))/100
+            rules.append(f"#banner-{int(s['id'])}{{ --banner-text:{colors[0]}; --banner-button:{colors[1]}; --banner-button-text:{colors[2]}; --banner-shade:{overlay}; }}")
+    return Response('\n'.join(rules),media_type='text/css')
+
+
 def visitor(request):
     if 'visitor' not in request.session:
         # Telegram user IDs are positive. Anonymous web IDs occupy a separate namespace.
@@ -61,6 +73,8 @@ def storefront(request: Request, platform: str = ''):
             raise HTTPException(404)
         request.session['mini_app'] = platform
     visitor(request)
+    from .reporting import capture
+    capture(request)
     with db.connect() as c:
         slides = c.execute('SELECT * FROM slides WHERE active=1 ORDER BY position,id').fetchall()
     products = [dict(p) for p in db.products(active=True)]
@@ -84,7 +98,7 @@ def public_media(filename: str):
         raise HTTPException(404)
     with db.connect() as c:
         allowed = (c.execute('SELECT 1 FROM products WHERE photo=? AND active=1', (filename,)).fetchone()
-                   or c.execute('SELECT 1 FROM slides WHERE photo=? AND active=1', (filename,)).fetchone()
+                   or c.execute('SELECT 1 FROM slides WHERE (photo=? OR mobile_photo=?) AND active=1', (filename,filename)).fetchone()
                    or db.settings(c).get('logo') == filename)
     if not allowed or not (config.MEDIA / filename).is_file():
         raise HTTPException(404)
@@ -178,6 +192,8 @@ async def checkout(request: Request):
             c.execute('UPDATE orders SET discount=?,district=?,legal_snapshot=? WHERE id=?',
                       (q['discount'],q['district'],q['legal_snapshot'],oid))
             # Source attribution only: it does not authenticate a messenger user.
+            from .reporting import record
+            record(c, oid, request)
             if request.session.get('mini_app') in ('telegram','max'):
                 c.execute('UPDATE orders SET channel=? WHERE id=?',(request.session['mini_app']+'_app',oid))
             c.executemany('INSERT INTO order_items(order_id,name,price,quantity,product_id,iiko_id,iiko_size) VALUES (?,?,?,?,?,?,?)',
@@ -222,7 +238,15 @@ def order_result(request: Request, token: str):
         subscribed = bool(c.execute('SELECT 1 FROM order_subscriptions WHERE order_id=?',(order['id'],)).fetchone())
     from .order_updates import telegram_state
     from .customer_accounts import links
+    ecommerce = None
+    if order['user_id'] == request.session.get('visitor'):
+        ecommerce = {'id':str(order['id']), 'revenue':order['total']/100,
+                     'paid':order['payment_status']=='paid', 'cancelled':order['status']=='cancelled',
+                     'purchase':order['status']!='cancelled' and (order['payment_method']!='tbank' or order['payment_status']=='paid'),
+                     'currency': 'RUB' if order['currency'] in ('₽','RUB','руб.') else order['currency'],
+                     'products':[{'id':str(p['product_id'] or p['id']), 'name':p['name'], 'price':p['price']/100, 'quantity':p['quantity']} for p in items]}
     return render(request, 'store_order.html', order=order, payment=payment, items=items,
+                  ecommerce=ecommerce,
                   subscribed=subscribed, telegram=telegram_state(), account_links=links(), tracking={
                       'status':order['status'],'payment_status':order['payment_status'],
                       'payment_state':payment['state'] if payment else '', 'payment_ready':bool(payment and payment['url']), 'subscribed':subscribed})

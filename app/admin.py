@@ -92,6 +92,12 @@ async def headers(request: Request, call_next):
         parents = 'https://web.telegram.org' if platform=='telegram' else 'https://web.max.ru https://max.ru'
         del response.headers['X-Frame-Options']
         response.headers['Content-Security-Policy'] = response.headers['Content-Security-Policy'].replace("script-src 'self'",f"script-src 'self' {sdk}").replace("frame-ancestors 'none'",f'frame-ancestors {parents}')
+    if public_page and db.settings().get('metrika_enabled')=='1':
+        policy = response.headers['Content-Security-Policy']
+        policy = policy.replace("script-src 'self'", "script-src 'self' https://mc.yandex.ru https://yastatic.net")
+        policy = policy.replace("connect-src 'self'", "connect-src 'self' https://mc.yandex.ru https://mc.yandex.com https://mc.webvisor.org")
+        policy = policy.replace("img-src 'self' data:", "img-src 'self' data: https://mc.yandex.ru https://mc.yandex.com")
+        response.headers['Content-Security-Policy'] = policy
     return response
 
 
@@ -111,10 +117,10 @@ def csrf_token(request):
     return request.session['csrf']
 
 
-async def form_data(request, admin=True, *, max_fields=30):
+async def form_data(request, admin=True, *, max_fields=30, max_files=1):
     if admin:
         require_admin(request)
-    form = await request.form(max_files=1, max_fields=max_fields, max_part_size=MAX_BODY)
+    form = await request.form(max_files=max_files, max_fields=max_fields, max_part_size=MAX_BODY)
     expected = request.session.get('csrf')
     if not expected or not hmac.compare_digest(str(form.get('csrf', '')).encode(), expected.encode()):
         await form.close()
@@ -189,7 +195,8 @@ def dashboard(request: Request):
         totals = c.execute("SELECT currency,sum(total) amount FROM orders WHERE status='done' GROUP BY currency").fetchall()
         product_count = c.execute('SELECT count(*) FROM products WHERE active=1').fetchone()[0]
         failed = c.execute('SELECT count(*) FROM outbox WHERE sent=-1').fetchone()[0]
-    return render(request, 'dashboard.html', orders=orders, counts=counts, totals=totals, product_count=product_count, failed=failed, page='dashboard')
+    from .reporting import report
+    return render(request, 'dashboard.html', report_summary=report({}), orders=orders, counts=counts, totals=totals, product_count=product_count, failed=failed, page='dashboard')
 
 
 @app.get('/admin/products')
@@ -356,7 +363,12 @@ def order_page(request: Request, oid: int, fragment: bool = False):
         items = c.execute('SELECT * FROM order_items WHERE order_id=?', (oid,)).fetchall()
     if not order:
         raise HTTPException(404, 'Заказ не найден')
-    return render(request, '_order_details.html' if fragment else 'order.html', order=order, items=items, page='orders')
+    import json
+    with db.connect() as c:
+        a = c.execute('SELECT * FROM order_attribution WHERE order_id=?',(oid,)).fetchone()
+        sync = c.execute('SELECT sync_status,sync_at,sync_error FROM iiko_jobs WHERE order_id=?',(oid,)).fetchone()
+    attribution = [('Первый переход',json.loads(a['first_touch'])),('Последний рекламный переход',json.loads(a['last_touch']))] if a else []
+    return render(request, '_order_details.html' if fragment else 'order.html', order=order, items=items, page='orders', attribution=attribution, iiko_sync=sync)
 
 
 @app.post('/admin/orders/{oid:int}/status')
@@ -469,3 +481,5 @@ app.include_router(sync_router)
 app.include_router(max_router)
 from .order_updates import router as updates_router
 app.include_router(updates_router)
+from .reporting import router as reporting_router
+app.include_router(reporting_router)
