@@ -1,0 +1,5 @@
+{% extends 'store_base.html' %}{% block title %}Уведомления о заказе{% endblock %}{% block content %}
+<main class="order-result"><h1>Подключить уведомления</h1><p>Откройте Telegram и нажмите «Запустить» в боте. Уведомления будут приходить только об этом заказе.</p>
+<a class="primary" href="{{ telegram_link }}" rel="noreferrer">Открыть Telegram ↗</a>
+<p class="muted">Ссылка одноразовая и действует 10 минут. Не передавайте её другим. Отключить уведомления можно командой /stopupdates.</p>
+<a href="/order/{{ order_token }}">Вернуться к заказу</a></main>{% endblock %}

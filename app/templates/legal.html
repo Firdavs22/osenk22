@@ -1,0 +1,4 @@
+{% extends 'store_base.html' %}
+{% set titles = {'offer':'Условия заказа и публичная оферта','privacy':'Политика конфиденциальности','delivery':'Доставка и оплата','returns':'Отмена заказа и возврат','contacts':'Контакты и реквизиты'} %}
+{% block title %}{{ titles[legal_page] }}{% endblock %}
+{% block content %}<main class="order-result legal-document"><h1>{{ titles[legal_page] }}</h1><div class="preline">{{ legal_text }}</div><p><a href="/">← Вернуться к меню</a></p></main>{% endblock %}

@@ -38,4 +38,6 @@ jobs:
       - name: Run isolated tests without real Telegram credentials
         run: python -m pytest tests -q
       - name: Check Linux installer syntax
-        run: bash -n deploy/install.sh
+        run: |
+          bash -n deploy/install.sh
+          bash -n deploy/setup-max-ca.sh

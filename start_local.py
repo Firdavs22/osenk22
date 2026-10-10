@@ -51,7 +51,8 @@ def run(port):
             raise RuntimeError(f'Порт {port} уже занят. Закройте предыдущий запуск или используйте python start_local.py --port 8001.')
     db.seed()
     url = f'http://127.0.0.1:{port}'
-    print('\nАдминка: ' + url, flush=True)
+    print('\nВитрина: ' + url, flush=True)
+    print('Админка: ' + url + '/admin', flush=True)
     print('Войдите с логином и паролем, которые указали при настройке.', flush=True)
     print('В настройках укажите контакты и включите «Принимать заказы».', flush=True)
     print('Затем отправьте своему боту /start и оформите пробный заказ.', flush=True)

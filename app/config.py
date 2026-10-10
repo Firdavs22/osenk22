@@ -16,6 +16,8 @@ SESSION_SECRET = os.getenv('SESSION_SECRET', '')
 COOKIE_SECURE = os.getenv('COOKIE_SECURE', 'false').lower() == 'true'
 SHOP_NAME = os.getenv('SHOP_NAME', 'Осень Кусна')
 CURRENCY = os.getenv('CURRENCY', '₽')
+PUBLIC_URL = os.getenv('PUBLIC_URL', '')
+MAX_CA_BUNDLE = os.getenv('MAX_CA_BUNDLE', '')
 
 
 def prepare():

@@ -73,6 +73,8 @@ def init():
           ip TEXT PRIMARY KEY, attempts INTEGER NOT NULL, until REAL NOT NULL);
         ''')
         c.executemany('INSERT OR IGNORE INTO settings VALUES (?,?)', DEFAULTS.items())
+        from .schema import migrate
+        migrate(c)
 
 
 def settings(c=None):
@@ -170,7 +172,7 @@ def quote(user, data, c=None):
         with connect() as conn:
             return quote(user, data, conn)
     s = settings(c)
-    items = cart(user, c)
+    items = [dict(p) for p in cart(user, c)]
     if s['orders_open'] != '1':
         raise ValueError('Приём заказов сейчас закрыт. Попробуйте в рабочее время.')
     if not items:
@@ -185,10 +187,25 @@ def quote(user, data, c=None):
         raise ValueError('Выберите способ получения')
     if method == 'delivery' and s['delivery_enabled'] != '1':
         raise ValueError('Доставка сейчас недоступна. Выберите самовывоз.')
+    district = ''
+    if method == 'delivery' and s.get('delivery_districts') == '1':
+        from .shop_policy import DISTRICTS
+        district = data.get('district', '')
+        if district not in DISTRICTS:
+            raise ValueError('Выберите район доставки. Для другого района или уточнения адреса позвоните ' + s['phone'] + ': стоимость нужно согласовать до заказа и оплаты.')
     free = int(s['free_delivery_from'])
     delivery = int(s['delivery_fee']) if method == 'delivery' and not (free > 0 and subtotal >= free) else 0
-    digest = hashlib.sha256(json.dumps([[dict(p) for p in items], s, method], sort_keys=True).encode()).hexdigest()
-    return {'items': items, 'subtotal': subtotal, 'delivery': delivery, 'total': subtotal + delivery,
+    percent = int(s.get('pickup_discount','0')) if method == 'pickup' else 0
+    if not 0 <= percent <= 50:
+        raise ValueError('Проверьте настройку скидки магазина')
+    for p in items:
+        p['price'] = max(1, (p['price'] * (100-percent) + 50)//100)
+    discount = subtotal - sum(p['price'] * p['quantity'] for p in items)
+    from .shop_policy import snapshot
+    legal_text, legal_hash = snapshot(s)
+    digest = hashlib.sha256(json.dumps([items, s, method, district, legal_hash], sort_keys=True).encode()).hexdigest()
+    return {'items': items, 'subtotal': subtotal, 'discount': discount, 'district': district,
+            'legal_snapshot': legal_text, 'delivery': delivery, 'total': subtotal - discount + delivery,
             'currency': s['currency'], 'fingerprint': digest}
 
 
@@ -196,11 +213,12 @@ def order_summary(order, items):
     currency = order['currency']
     lines = [f'Заказ №{order["id"]} · {STATUSES[order["status"]]}',
              *[f'{p["name"]} × {p["quantity"]} — {money(p["price"] * p["quantity"], currency)}' for p in items],
+             f'Скидка на самовывоз: {money(dict(order).get("discount",0), currency)}',
              f'Доставка: {money(order["delivery"], currency)}', f'Итого: {money(order["total"], currency)}',
              f'Имя: {order["customer"]}', f'Телефон: {order["phone"]}',
              'Получение: ' + ('Доставка' if order['method'] == 'delivery' else 'Самовывоз'),
              f'Адрес: {order["address"]}', f'Комментарий: {order["comment"] or "—"}',
-             'Оплата при получении. Онлайн-оплата не производится.']
+             'Оплата: ' + ({'cash':'наличными при получении','card':'картой при получении'}.get(dict(order).get('payment_method','cash'), dict(order).get('payment_status','pending')))]
     return '\n'.join(lines)
 
 
@@ -229,27 +247,61 @@ def place_order(user, token):
         cursor = c.execute('''INSERT INTO orders(token,user_id,customer,phone,method,address,comment,subtotal,delivery,total,currency)
             VALUES (?,?,?,?,?,?,?,?,?,?,?)''', (token, user, d['customer'], d['phone'], d['method'], d['address'], d.get('comment',''), q['subtotal'], q['delivery'], q['total'], q['currency']))
         oid = cursor.lastrowid
-        c.executemany('INSERT INTO order_items(order_id,name,price,quantity) VALUES (?,?,?,?)',
-                      [(oid, p['name'], p['price'], p['quantity']) for p in q['items']])
+        c.execute('UPDATE orders SET discount=?,district=?,legal_snapshot=?,consent_at=strftime(\'%Y-%m-%d %H:%M:%S\',\'now\') WHERE id=?',
+                  (q['discount'],q['district'],q['legal_snapshot'],oid))
+        c.executemany('INSERT INTO order_items(order_id,name,price,quantity,product_id,iiko_id,iiko_size) VALUES (?,?,?,?,?,?,?)',
+                      [(oid, p['name'], p['price'], p['quantity'], p['id'], p['iiko_id'], p['iiko_size']) for p in q['items']])
         order = c.execute('SELECT * FROM orders WHERE id=?', (oid,)).fetchone()
         summary = order_summary(order, q['items'])
-        enqueue(c, user, 'Спасибо! Заказ получен, ожидайте подтверждения магазина.\n\n' + summary)
-        for admin in config.ADMIN_IDS:
-            enqueue(c, admin, '🍣 Новый заказ!\n\n' + summary)
+        enqueue(c, user, 'Спасибо! Мы получили ваш заказ.\n\n' + summary)
+        c.execute('UPDATE orders SET notified=0 WHERE id=?',(oid,))
+        from .store import notify_order
+        notify_order(c,oid)
+        from .customer_accounts import new_order
+        new_order(c,oid)
+        auto_accept(c,oid)
         c.execute('DELETE FROM cart WHERE user_id=?', (user,))
         c.execute('DELETE FROM drafts WHERE user_id=?', (user,))
         return oid
 
 
-def set_status(oid, status):
-    with connect(True) as c:
-        order = c.execute('SELECT * FROM orders WHERE id=?', (oid,)).fetchone()
-        if not order:
-            raise ValueError('Заказ не найден')
-        if status not in TRANSITIONS[order['status']]:
-            raise ValueError('Недопустимый переход статуса. Обновите страницу.')
-        c.execute('UPDATE orders SET status=? WHERE id=?', (status, oid))
+def set_status(oid, status, c=None, *, from_iiko=False):
+    if c is None:
+        with connect(True) as conn:
+            return set_status(oid, status, conn, from_iiko=from_iiko)
+    order = c.execute('SELECT * FROM orders WHERE id=?', (oid,)).fetchone()
+    if not order:
+        raise ValueError('Заказ не найден')
+    if from_iiko:
+        stages = ['new','accepted','cooking','ready','done']
+        if order['status'] in ('done','cancelled') or status == order['status']:
+            return
+        if status != 'cancelled' and (status not in stages or stages.index(status) <= stages.index(order['status'])):
+            return
+    elif status not in TRANSITIONS[order['status']]:
+        raise ValueError('Недопустимый переход статуса. Обновите страницу.')
+    if status != 'cancelled' and order['payment_method'] == 'tbank' and order['payment_status'] != 'paid':
+        raise ValueError('Онлайн-оплата ещё не подтверждена банком')
+    c.execute('UPDATE orders SET status=? WHERE id=?', (status, oid))
+    if order['channel'] == 'telegram':
         enqueue(c, order['user_id'], f'Заказ №{oid}: {STATUSES[status]}.')
+    else:
+        from .order_updates import queue_status
+        queue_status(c, dict(order) | {'status':status})
+    from .customer_accounts import queue
+    queue(c, dict(order) | {'status':status})
+    from .max_chat import queue as queue_max
+    queue_max(c, dict(order) | {'status':status})
+    if status == 'accepted' and not from_iiko:
+        from .integrations import queue_iiko
+        queue_iiko(c, oid)
+
+
+def auto_accept(c, oid):
+    order = c.execute('SELECT * FROM orders WHERE id=?', (oid,)).fetchone()
+    if (settings(c).get('auto_accept') == '1' and order and order['status'] == 'new'
+            and (order['payment_method'] != 'tbank' or order['payment_status'] == 'paid')):
+        set_status(oid, 'accepted', c)
 
 
 def login_allowed(ip):
@@ -282,3 +334,9 @@ def seed():
             ('Сет на двоих', 'Сеты', 'Филадельфия, Калифорния, маки с огурцом', '720 г · 24 шт.', 139000),
             ('Суши с лососем', 'Суши', 'Рис, лосось', '35 г · 1 шт.', 16000)]:
             c.execute('INSERT INTO products(category_id,name,ingredients,weight,price) VALUES (?,?,?,?,?)', (cats[cat], name, ingredients, weight, price))
+
+
+def admin_ids():
+    from .vault import get_config
+    cfg = get_config('telegram')
+    return cfg.get('admin_ids', config.ADMIN_IDS) if cfg.get('enabled', True) else []
