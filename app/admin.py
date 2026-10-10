@@ -51,7 +51,7 @@ class RequestLimit:
 @asynccontextmanager
 async def lifespan(app):
     if len(config.SESSION_SECRET) < 32 or not config.ADMIN_PASSWORD_HASH.startswith('scrypt$'):
-        raise RuntimeError('Создайте SESSION_SECRET и ADMIN_PASSWORD_HASH: см. README.md')
+        raise RuntimeError('Создайте SESSION_SECRET и ADMIN_PASSWORD_HASH: python -m app.manage setup')
     db.init()
     import asyncio
     from contextlib import suppress
