@@ -1,9 +1,10 @@
 {% extends 'base.html' %}{% block title %}Заказы{% endblock %}{% block content %}
-<link rel="stylesheet" href="/static/orders.css?v=scroll-2">
+<link rel="stylesheet" href="/static/orders.css?v=compact-3">
 <header><div><p class="eyebrow">КУХНЯ И ДОСТАВКА</p><h1>Заказы</h1><p class="muted">Автопринятие {{ 'включено' if shop.auto_accept == '1' else 'выключено' }} · <a href="/admin/settings">Настроить</a></p></div><button type="button" id="orders-refresh">Обновить ↻</button></header>
-<div class="tabs"><a class="{{ 'active' if not status }}" href="/admin/orders">Все</a>{% for key,label in statuses.items() %}<a class="{{ 'active' if status==key }}" href="/admin/orders?status={{ key }}">{{ label }}</a>{% endfor %}</div>
+<div class="tabs"><a class="{{ 'active' if not status }}" href="/admin/orders?start={{ start|urlencode }}&end={{ end|urlencode }}">Все</a>{% for key,label in statuses.items() %}<a class="{{ 'active' if status==key }}" href="/admin/orders?status={{ key }}&start={{ start|urlencode }}&end={{ end|urlencode }}">{{ label }}</a>{% endfor %}</div>
+<form class="panel padded report-filters order-filters" method="get" action="/admin/orders"><input type="hidden" name="status" value="{{ status }}"><label>Дата оформления с<input type="date" name="start" value="{{ start }}"></label><label>По<input type="date" name="end" value="{{ end }}"></label><button class="primary">Показать</button><a href="/admin/orders?status={{ status|urlencode }}">Сбросить даты</a><span class="hint">Время Москвы</span></form>
 <p class="hint" id="orders-sync" role="status">Обновление каждые 10 секунд. Состав и адрес — по кнопке «Подробнее».</p>
 <div id="orders-board">{% include '_orders_board.html' %}</div>
 <dialog id="order-modal" aria-label="Подробности заказа"><button type="button" class="order-close" aria-label="Закрыть">Закрыть ×</button><p id="order-error" role="alert"></p><div id="order-content"></div></dialog>
-<script src="/static/orders.js?v=scroll-2" defer></script>
+<script src="/static/orders.js?v=compact-3" defer></script>
 {% endblock %}

@@ -324,18 +324,31 @@ def orders_page(request: Request, status: str = '', page_num: int = 1, fragment:
     page_num = max(1, page_num)
     status = status if status in db.STATUSES else ''
     columns = {}
+    start, end = request.query_params.get('start', ''), request.query_params.get('end', '')
+    lo = hi = ''
+    error = None
+    if start or end:
+        from .reporting import period
+        try:
+            _, _, lo, hi = period({'start': start or end, 'end': end or start})
+            start, end = start or end, end or start
+        except ValueError as exc:
+            error = str(exc)
+            lo = hi = '~'  # Invalid filters must not silently show unrelated orders.
+    date_filter = " AND (?='' OR o.created_at>=?) AND (?='' OR o.created_at<?)"
+    dates = (lo, lo, hi, hi)
     with db.connect() as c:
-        counts = dict(c.execute('SELECT status,count(*) FROM orders GROUP BY status').fetchall())
+        counts = dict(c.execute('SELECT status,count(*) FROM orders o WHERE 1=1' + date_filter + ' GROUP BY status', dates).fetchall())
         for key in ([status] if status else db.STATUSES):
             columns[key] = c.execute('''SELECT o.*,
                 (SELECT COALESCE(sum(quantity),0) FROM order_items WHERE order_id=o.id) item_count,
                 (SELECT count(*) FROM orders customer_orders WHERE
                     (o.phone_key<>'' AND customer_orders.phone_key=o.phone_key)
                     OR (o.phone_key='' AND customer_orders.id=o.id)) customer_order_count
-                FROM orders o WHERE status=? ORDER BY id DESC LIMIT 30 OFFSET ?''',
-                                     (key,(page_num-1)*30)).fetchall()
+                FROM orders o WHERE status=?''' + date_filter + ' ORDER BY id DESC LIMIT 30 OFFSET ?',
+                                     (key,*dates,(page_num-1)*30)).fetchall()
     return render(request, '_orders_board.html' if fragment else 'orders.html', columns=columns, counts=counts,
-                  status=status, page_num=page_num, count=sum(counts.get(k,0) for k in columns),
+                  status=status, start=start, end=end, error=error, page_num=page_num, count=sum(counts.get(k,0) for k in columns),
                   has_more=any(counts.get(k,0)>page_num*30 for k in columns), page='orders')
 
 

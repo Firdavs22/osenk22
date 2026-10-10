@@ -3,3 +3,7 @@
 .quick-status{margin-top:14px}.quick-status button{width:100%;font-size:12px}.card-counts{font-size:11px;color:var(--muted)}.card-bottom a{white-space:nowrap}
 
 .orders-kanban{cursor:grab;overscroll-behavior-x:contain;max-width:100%}.orders-kanban.dragging{cursor:grabbing;user-select:none;scroll-snap-type:none}.orders-kanban.dragging *{cursor:grabbing}
+
+.archive-card{display:grid;grid-template-columns:auto minmax(0,1fr) auto;align-items:center;gap:10px;padding:14px 12px;font-size:12px}.archive-card span{overflow-wrap:anywhere}.archive-card strong:last-child{white-space:nowrap}.archive-card:focus-visible{outline:2px solid var(--orange);outline-offset:2px}
+
+.archive-only .order-column{flex:1 1 100%;max-width:900px}.archive-only .archive-card{font-size:14px;grid-template-columns:80px minmax(0,1fr) auto}

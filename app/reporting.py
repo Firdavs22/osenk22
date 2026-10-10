@@ -77,6 +77,12 @@ def period(params):
 
 def report(params):
     start,end,lo,hi = period(params)
+    product_q = params.get('product_q', '').strip()[:100]
+    product_category = params.get('product_category', '')[:100]
+    product_sort = params.get('product_sort', 'quantity')
+    if product_sort not in ('quantity', 'amount', 'name'): product_sort = 'quantity'
+    product_limit = params.get('product_limit', '15')
+    if product_limit not in ('15', '30', '50', '100'): product_limit = '15'
     with db.connect() as c:
         currencies = [r[0] for r in c.execute('SELECT DISTINCT currency FROM orders ORDER BY currency')]
         currency = params.get('currency') or db.settings(c)['currency']
@@ -90,12 +96,19 @@ def report(params):
             WHERE o.created_at>=? AND o.created_at<? AND o.currency=? AND (?='' OR o.channel=?)''',(lo,hi,currency,channel,channel))]
         prevlo = (datetime.fromisoformat(lo)-timedelta(days=(end-start).days+1)).isoformat(' ')
         previous = c.execute("SELECT count(*) n,COALESCE(sum(total),0) total FROM orders WHERE created_at>=? AND created_at<? AND currency=? AND status='done' AND (?='' OR channel=?)",(prevlo,lo,currency,channel,channel)).fetchone()
-        products = c.execute("""SELECT i.name,sum(i.quantity) quantity,sum(i.price*i.quantity) amount FROM order_items i JOIN orders o ON o.id=i.order_id
+        products = c.execute("""SELECT i.name,COALESCE(NULLIF(i.category_name,''),'Без сохранённой категории') category,sum(i.quantity) quantity,sum(i.price*i.quantity) amount FROM order_items i JOIN orders o ON o.id=i.order_id
             WHERE o.created_at>=? AND o.created_at<? AND o.currency=? AND o.status='done' AND (?='' OR o.channel=?)
-            GROUP BY i.name ORDER BY quantity DESC LIMIT 15""",(lo,hi,currency,channel,channel)).fetchall()
+            GROUP BY i.name,i.category_name""",(lo,hi,currency,channel,channel)).fetchall()
         categories = c.execute("""SELECT COALESCE(NULLIF(i.category_name,''),'Без сохранённой категории') name,sum(i.quantity) quantity,sum(i.price*i.quantity) amount
             FROM order_items i JOIN orders o ON o.id=i.order_id WHERE o.created_at>=? AND o.created_at<? AND o.currency=? AND o.status='done' AND (?='' OR o.channel=?)
             GROUP BY i.category_name ORDER BY amount DESC""",(lo,hi,currency,channel,channel)).fetchall()
+    product_categories = sorted({p['category'] for p in products}, key=str.casefold)
+    products = [dict(p) for p in products if product_q.casefold() in p['name'].casefold()
+                and (not product_category or p['category']==product_category)]
+    products.sort(key=lambda p: (p['name'].casefold(),p['category']) if product_sort=='name'
+                  else (-p[product_sort],p['name'].casefold(),p['category']))
+    product_count = len(products)
+    products = products[:int(product_limit)]
     done = [r for r in rows if r['status']=='done']
     total = sum(r['total'] for r in done)
     counts = {s: sum(r['status']==s for r in rows) for s in db.STATUSES}
@@ -115,6 +128,8 @@ def report(params):
         bucket['n'] += 1
         if r['status']=='done': bucket['done']+=1; bucket['amount']+=r['total']
     return dict(start=start,end=end,currency=currency,currencies=sorted(set(currencies+[currency])),channel=channel,
+        product_q=product_q,product_category=product_category,product_categories=product_categories,
+        product_sort=product_sort,product_limit=product_limit,product_count=product_count,
         model='first' if model=='first_touch' else 'last',counts=counts,n=len(rows),total=total,
         average=round(total/len(done)) if done else 0, previous=dict(previous),
         placed=sum(r['total'] for r in rows), paid=sum(r['total'] for r in rows if r['payment_method']=='tbank' and r['payment_status']=='paid'),
@@ -138,6 +153,7 @@ def analytics(request: Request):
 
 
 @router.post('/admin/analytics/settings')
+@router.post('/admin/settings/analytics')
 async def save_settings(request: Request):
     from .admin import form_data, field, redirect
     form = await form_data(request)
@@ -148,8 +164,15 @@ async def save_settings(request: Request):
             raise ValueError('Укажите числовой номер счётчика Метрики')
         with db.connect(True) as c:
             c.executemany('UPDATE settings SET value=? WHERE key=?',[(counter,'metrika_id'),('1' if enabled else '0','metrika_enabled'),('1' if form.get('iiko_status_sync')=='on' else '0','iiko_status_sync')])
-        return redirect('/admin/analytics',ok='Настройки сохранены')
+        return redirect('/admin/settings/analytics',ok='Настройки сохранены')
     except ValueError as exc:
-        return redirect('/admin/analytics',error=exc)
+        return redirect('/admin/settings/analytics',error=exc)
     finally:
         await form.close()
+
+
+@router.get('/admin/settings/analytics')
+def analytics_settings(request: Request):
+    from .admin import require_admin, render
+    require_admin(request)
+    return render(request, 'analytics_settings.html', page='analytics_settings')
