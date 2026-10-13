@@ -194,9 +194,8 @@ def dashboard(request: Request):
         counts = dict(c.execute('SELECT status,count(*) FROM orders GROUP BY status').fetchall())
         totals = c.execute("SELECT currency,sum(total) amount FROM orders WHERE status='done' GROUP BY currency").fetchall()
         product_count = c.execute('SELECT count(*) FROM products WHERE active=1').fetchone()[0]
-        failed = c.execute('SELECT count(*) FROM outbox WHERE sent=-1').fetchone()[0]
     from .reporting import report
-    return render(request, 'dashboard.html', report_summary=report({}), orders=orders, counts=counts, totals=totals, product_count=product_count, failed=failed, page='dashboard')
+    return render(request, 'dashboard.html', report_summary=report({}), orders=orders, counts=counts, totals=totals, product_count=product_count, page='dashboard')
 
 
 @app.get('/admin/products')
@@ -428,15 +427,16 @@ async def settings_save(request: Request):
 
 
 @app.get('/admin/notifications')
+@app.get('/admin/settings/diagnostics')
 def notification_page(request: Request):
     require_admin(request)
     from .order_updates import telegram_state
     with db.connect() as c:
-        rows = c.execute('SELECT * FROM outbox ORDER BY id DESC LIMIT 100').fetchall()
+        rows = c.execute('SELECT * FROM outbox WHERE sent<>1 ORDER BY id DESC LIMIT 100').fetchall()
         customer_rows=c.execute('''SELECT m.*,a.platform,a.chat_id,a.notifications FROM customer_messages m
-            JOIN customer_accounts a ON a.id=m.account_id ORDER BY m.id DESC LIMIT 100''').fetchall()
+            JOIN customer_accounts a ON a.id=m.account_id WHERE m.sent<>1 ORDER BY m.id DESC LIMIT 100''').fetchall()
         max_rows=c.execute('''SELECT m.*,r.chat_id,r.notifications FROM max_order_messages m
-            JOIN max_order_recipients r ON r.order_id=m.order_id ORDER BY m.id DESC LIMIT 100''').fetchall()
+            JOIN max_order_recipients r ON r.order_id=m.order_id WHERE m.sent<>1 ORDER BY m.id DESC LIMIT 100''').fetchall()
         missing = c.execute("SELECT count(*) FROM orders WHERE notified=0 AND status NOT IN ('cancelled','done') AND (payment_method<>'tbank' OR payment_status='paid')").fetchone()[0]
     return render(request, 'notifications.html', notifications=rows, customer_notifications=customer_rows, max_notifications=max_rows,
                   telegram=telegram_state(), missing=missing, page='notifications')
@@ -447,7 +447,7 @@ async def retry_customer_notification(request: Request, nid: int):
     await form_data(request)
     with db.connect(True) as c:
         c.execute("UPDATE customer_messages SET sent=0,attempts=0,next_try=0,error='' WHERE id=? AND sent=-1",(nid,))
-    return redirect('/admin/notifications',ok='Повтор сообщения покупателю запланирован')
+    return redirect('/admin/settings/diagnostics',ok='Повтор сообщения покупателю запланирован')
 
 
 @app.post('/admin/max-notifications/{nid:int}/retry')
@@ -455,7 +455,7 @@ async def retry_max_notification(request: Request, nid: int):
     await form_data(request)
     with db.connect(True) as c:
         c.execute("UPDATE max_order_messages SET sent=0,attempts=0,next_try=0,error='' WHERE id=? AND sent=-1",(nid,))
-    return redirect('/admin/notifications',ok='Повтор сообщения MAX запланирован')
+    return redirect('/admin/settings/diagnostics',ok='Повтор сообщения MAX запланирован')
 
 
 @app.post('/admin/notifications/{nid:int}/retry')
@@ -463,7 +463,7 @@ async def retry_notification(request: Request, nid: int):
     await form_data(request)
     with db.connect(True) as c:
         c.execute('UPDATE outbox SET sent=0,attempts=0,next_try=0 WHERE id=? AND sent=-1', (nid,))
-    return redirect('/admin/notifications', ok='Повторная отправка запланирована')
+    return redirect('/admin/settings/diagnostics', ok='Повторная отправка запланирована')
 
 
 @app.get('/admin/media/{filename}')

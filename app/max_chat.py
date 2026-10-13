@@ -304,3 +304,5 @@ def claim(key):
 
 def complete(mid,state,error='',delay=30):
     with db.connect(True) as c:c.execute('UPDATE max_order_messages SET sent=?,error=?,next_try=? WHERE id=?',(state,error,time.time()+delay,mid))
+    from .notification_log import delivery_result
+    delivery_result('max', mid, state)

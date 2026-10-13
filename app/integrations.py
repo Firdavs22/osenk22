@@ -269,8 +269,13 @@ async def tick():
 
 
 async def worker():
+    cleanup_at = 0
     while True:
         try:
+            if time.monotonic() >= cleanup_at:
+                from .notification_log import prune_sent
+                prune_sent()
+                cleanup_at = time.monotonic() + 3600
             await tick()
             from .iiko_status import tick as sync_statuses
             await sync_statuses()

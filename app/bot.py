@@ -408,6 +408,8 @@ async def deliver_once(bot):
         with db.connect(True) as c:
             c.execute('UPDATE outbox SET sent=?,attempts=attempts+1,next_try=?,error=?,last_attempt=? WHERE id=?',
                       (state, time.time() + delay,error,time.time(),row['id']))
+        from .notification_log import delivery_result
+        delivery_result('telegram', row['id'], state)
 
 
 async def deliver_customer_once(bot):
