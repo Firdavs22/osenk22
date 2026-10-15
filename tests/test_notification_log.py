@@ -41,7 +41,7 @@ def test_diagnostics_is_under_settings_and_shows_only_actionable_messages(client
         c.execute("INSERT INTO outbox(chat_id,text,sent) VALUES (1,'sent-secret-body',1),(1,'failed-message',-1)")
     page=client.get('/admin').text
     assert 'delivery-note' not in page and 'Посмотреть очередь' not in page
-    assert '<span>Уведомления</span>' not in page and 'id="browser-notifications"' in page
+    assert 'id="order-inbox-open"' in page and 'id="browser-notifications"' not in page
     assert 'Диагностика' in client.get('/admin/settings').text
     page=client.get('/admin/settings/diagnostics').text
     assert 'failed-message' in page and 'sent-secret-body' not in page

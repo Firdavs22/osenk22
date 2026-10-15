@@ -352,14 +352,18 @@ def orders_page(request: Request, status: str = '', page_num: int = 1, fragment:
 
 
 @app.get('/admin/order-feed')
-def order_feed(request: Request, after: int | None = None):
+def order_feed(request: Request, after: int | None = None, inbox: bool = False):
     require_admin(request)
     with db.connect() as c:
         latest = c.execute('SELECT COALESCE(max(id),0) FROM orders').fetchone()[0]
         rows = [] if after is None else c.execute('SELECT id FROM orders WHERE id>? ORDER BY id LIMIT 50',
                                                   (max(0,after),)).fetchall()
         pending = c.execute("SELECT count(*) FROM orders WHERE status='new'").fetchone()[0]
-    return {'cursor':rows[-1]['id'] if rows else latest, 'orders':[r['id'] for r in rows], 'pending':pending}
+        recent = c.execute('SELECT id,status,total,currency,created_at FROM orders ORDER BY id DESC LIMIT 50').fetchall() if inbox else []
+    data = {'cursor':rows[-1]['id'] if rows else latest, 'orders':[r['id'] for r in rows], 'pending':pending}
+    if inbox:
+        data.update(latest=latest, recent=[dict(r) | {'status_label': db.STATUSES.get(r['status'], r['status'])} for r in recent])
+    return JSONResponse(data, headers={'Cache-Control': 'no-store'})
 
 
 @app.get('/admin/notifications-worker.js')

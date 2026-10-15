@@ -72,6 +72,29 @@ def test_order_feed_private_bounded_and_no_customer_data(client,monkeypatch):
     page=client.get('/admin/order-feed?after=0').json()
     assert len(page['orders'])==50 and page['cursor']==50
     assert client.get('/admin/order-feed?after=50').json()['orders']==[51,52,53]
+    response=client.get('/admin/order-feed?inbox=true&after=50')
+    assert response.headers['cache-control']=='no-store'
+    inbox=response.json()
+    assert inbox['orders']==[51,52,53] and inbox['latest']==53
+    assert len(inbox['recent'])==50 and inbox['recent'][0]['id']==53
+    assert inbox['recent'][-1]['id']==4
+    assert set(inbox['recent'][0])=={'id','status','status_label','total','currency','created_at'}
+    db.set_status(53,'accepted')
+    assert client.get('/admin/order-feed?inbox=true').json()['recent'][0]['status_label']=='Принят'
+
+
+def test_inbox_available_everywhere_and_browser_switch_in_settings(client):
+    assert client.get('/admin/order-feed?inbox=true',follow_redirects=False).status_code==303
+    assert 'id="order-inbox-open"' not in client.get('/admin/login').text
+    login(client)
+    assert client.get('/admin/order-feed?inbox=true').json()['recent']==[]
+    for path in ('/admin','/admin/orders','/admin/products'):
+        page=client.get(path).text
+        assert 'id="order-inbox-open"' in page and '<dialog id="order-inbox"' in page
+        assert 'id="browser-notifications"' not in page
+    page=client.get('/admin/settings').text
+    assert 'id="browser-notifications"' in page and 'id="notification-settings"' in page
+
 
 
 def test_quick_progress_counts_and_duplicate_submission(client):
