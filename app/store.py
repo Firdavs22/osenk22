@@ -13,6 +13,11 @@ from . import config, db
 router = APIRouter()
 
 
+def checkout_destination(order):
+    suffix = '?pay=1' if order['payment_method']=='tbank' and order['payment_status']=='pending' and order['status']!='cancelled' else ''
+    return '/order/' + order['public_token'] + suffix
+
+
 @router.get('/banner-styles.css')
 def banner_styles():
     from fastapi.responses import Response
@@ -156,9 +161,9 @@ async def checkout(request: Request):
     try:
         # Look up a completed attempt before reading a cart that might already be empty.
         with db.connect() as c:
-            old = c.execute('SELECT public_token FROM orders WHERE token=? AND user_id=?', (key, user)).fetchone()
+            old = c.execute('SELECT * FROM orders WHERE token=? AND user_id=?', (key, user)).fetchone()
         if old:
-            return {'url': '/order/' + old['public_token']}
+            return {'url': checkout_destination(old)}
         if not key or key != request.session.get('checkout_key'):
             raise ValueError('Обновите итог заказа')
         limit(request, 'checkout', 10)
@@ -179,9 +184,9 @@ async def checkout(request: Request):
         address = contact(data, 'address', 10, 400) if method == 'delivery' else db.settings()['address']
         with db.connect(True) as c:
             # Transaction serializes concurrent duplicate submissions and cart changes.
-            old = c.execute('SELECT public_token FROM orders WHERE token=? AND user_id=?', (key, user)).fetchone()
+            old = c.execute('SELECT * FROM orders WHERE token=? AND user_id=?', (key, user)).fetchone()
             if old:
-                return {'url': '/order/' + old['public_token']}
+                return {'url': checkout_destination(old)}
             q = db.quote(user, data, c)
             if q['fingerprint'] != data.get('fingerprint'):
                 raise ValueError('Цена или корзина изменились. Проверьте новый итог и подтвердите заказ ещё раз.')
@@ -207,13 +212,15 @@ async def checkout(request: Request):
             db.auto_accept(c, oid)
             c.execute('DELETE FROM cart WHERE user_id=?', (user,))
         request.session.pop('checkout_key', None)
-        return {'url': '/order/' + public_token}
+        return {'url': '/order/' + public_token + ('?pay=1' if payment=='tbank' else '')}
     except ValueError as exc:
         return JSONResponse({'detail': str(exc)}, 400)
 
 
 def notify_order(c, oid):
     order = c.execute('SELECT * FROM orders WHERE id=?', (oid,)).fetchone()
+    if order['payment_method']=='tbank' and order['payment_status'] not in ('paid','refunded','partial_refund'):
+        return
     if order['notified']:
         return
     items = c.execute('SELECT * FROM order_items WHERE order_id=?', (oid,)).fetchall()
@@ -233,7 +240,7 @@ def order_result(request: Request, token: str):
         order = c.execute('SELECT * FROM orders WHERE public_token=?', (token,)).fetchone()
         if not order:
             raise HTTPException(404)
-        payment = c.execute('SELECT state,url,error FROM payments WHERE order_id=?', (order['id'],)).fetchone()
+        payment = c.execute('SELECT state,url,error,expires FROM payments WHERE order_id=?', (order['id'],)).fetchone()
         items = c.execute('SELECT * FROM order_items WHERE order_id=?', (order['id'],)).fetchall()
         subscribed = bool(c.execute('SELECT 1 FROM order_subscriptions WHERE order_id=?',(order['id'],)).fetchone())
     from .order_updates import telegram_state
@@ -245,11 +252,36 @@ def order_result(request: Request, token: str):
                      'purchase':order['status']!='cancelled' and (order['payment_method']!='tbank' or order['payment_status']=='paid'),
                      'currency': 'RUB' if order['currency'] in ('₽','RUB','руб.') else order['currency'],
                      'products':[{'id':str(p['product_id'] or p['id']), 'name':p['name'], 'price':p['price']/100, 'quantity':p['quantity']} for p in items]}
-    return render(request, 'store_order.html', order=order, payment=payment, items=items,
+    from .integrations import payment_tracking
+    waiting = order['payment_method']=='tbank' and order['payment_status'] not in ('paid','refunded','partial_refund')
+    return render(request, 'store_order.html', order=order, payment=payment, items=items, awaiting_payment=waiting,
+                  auto_pay=waiting and order['status']!='cancelled' and request.query_params.get('pay')=='1',
+                  can_start_payment=order['user_id']==request.session.get('visitor'),
                   ecommerce=ecommerce,
-                  subscribed=subscribed, telegram=telegram_state(), account_links=links(), tracking={
-                      'status':order['status'],'payment_status':order['payment_status'],
-                      'payment_state':payment['state'] if payment else '', 'payment_ready':bool(payment and payment['url']), 'subscribed':subscribed})
+                  subscribed=subscribed, telegram=telegram_state(), account_links=links(),
+                  tracking=payment_tracking(order,payment,subscribed))
+
+
+@router.post('/api/order/{token}/payment')
+async def start_payment(request: Request, token: str):
+    await payload(request)
+    with db.connect() as c:
+        order = c.execute('SELECT * FROM orders WHERE public_token=? AND user_id=?',
+                          (token,request.session.get('visitor'))).fetchone()
+    if not order:
+        raise HTTPException(404)
+    from .integrations import process_payment, payment_row, log
+    row = payment_row(order['id'])
+    if row and order['status']!='cancelled' and order['payment_status']=='pending' and row['expires']>time.time():
+        try:
+            # Claim once, outside the checkout transaction. The worker recovers timeouts.
+            await process_payment(order['id'], initialize_only=True)
+        except Exception as exc:
+            message = str(exc) if type(exc) is ValueError else 'Нет подтверждения от банка. Повторим проверку автоматически.'
+            with db.connect(True) as c:
+                c.execute('UPDATE payments SET error=? WHERE order_id=?', (message,order['id']))
+            log.warning('Payment initialization order %s: %s', order['id'], type(exc).__name__)
+    return JSONResponse({'ok':True}, headers={'Cache-Control':'no-store'})
 
 
 @router.get('/legal/{page}')

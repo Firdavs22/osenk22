@@ -140,7 +140,7 @@ def history(platform, bot_key, user_id, before=0, compact=False):
             OR (o.channel='telegram' AND o.user_id=? AND ?>0)
             OR (?='max' AND EXISTS(SELECT 1 FROM max_order_recipients r
                 WHERE r.order_id=o.id AND r.bot_key=? AND r.user_id=?)))
-            AND (?=0 OR o.id<?) ORDER BY o.id DESC LIMIT 6''',
+            AND ''' + db.confirmed_sql('o') + ''' AND (?=0 OR o.id<?) ORDER BY o.id DESC LIMIT 6''',
             (aid,native,native,platform,str(bot_key),user_id,before,before)).fetchall()
         texts = []
         for o in orders[:5]:
@@ -168,6 +168,8 @@ def new_order(c, oid):
 
 
 def queue(c, order, event='status'):
+    if order['payment_method']=='tbank' and order['payment_status'] not in ('paid','refunded','partial_refund'):
+        return
     accounts = c.execute('''SELECT a.* FROM customer_accounts a JOIN customer_orders co ON co.account_id=a.id
         WHERE co.order_id=? AND a.notifications=1''',(order['id'],)).fetchall()
     for account in accounts:
@@ -197,8 +199,8 @@ def claim(platform, bot_key):
     with db.connect(True) as c:
         c.execute("UPDATE customer_messages SET sent=-1,error='Исчерпаны попытки отправки' WHERE sent=0 AND attempts>=8 AND next_try<=?",(now,))
         row = c.execute('''SELECT m.*,a.chat_id FROM customer_messages m JOIN customer_accounts a ON a.id=m.account_id
-            WHERE a.platform=? AND a.bot_key=? AND a.notifications=1 AND m.sent=0 AND m.next_try<=? AND m.attempts<8
-            AND NOT EXISTS(SELECT 1 FROM customer_messages older WHERE older.account_id=m.account_id AND older.id<m.id AND older.sent=0)
+            WHERE EXISTS(SELECT 1 FROM orders o WHERE o.id=m.order_id AND ''' + db.confirmed_sql('o') + ''') AND a.platform=? AND a.bot_key=? AND a.notifications=1 AND m.sent=0 AND m.next_try<=? AND m.attempts<8
+            AND NOT EXISTS(SELECT 1 FROM customer_messages older WHERE older.account_id=m.account_id AND older.id<m.id AND older.sent=0 AND EXISTS(SELECT 1 FROM orders o WHERE o.id=older.order_id AND ''' + db.confirmed_sql('o') + '''))
             ORDER BY m.id LIMIT 1''',(platform,str(bot_key),now)).fetchone()
         if row:
             c.execute('UPDATE customer_messages SET attempts=attempts+1,next_try=? WHERE id=?',(now+60,row['id']))

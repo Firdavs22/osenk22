@@ -90,10 +90,10 @@ def report(params):
         if channel not in ('','web','telegram','max','telegram_app','max_app'):
             channel = ''
         rows = [dict(r) for r in c.execute('''SELECT o.*,a.first_touch,a.last_touch,
-            EXISTS(SELECT 1 FROM orders p WHERE p.phone_key=o.phone_key AND o.phone_key<>'' AND p.status<>'cancelled'
+            EXISTS(SELECT 1 FROM orders p WHERE p.phone_key=o.phone_key AND o.phone_key<>'' AND p.status<>'cancelled' AND ''' + db.confirmed_sql('p') + '''
                 AND (p.created_at<o.created_at OR (p.created_at=o.created_at AND p.id<o.id))) repeated
             FROM orders o LEFT JOIN order_attribution a ON a.order_id=o.id
-            WHERE o.created_at>=? AND o.created_at<? AND o.currency=? AND (?='' OR o.channel=?)''',(lo,hi,currency,channel,channel))]
+            WHERE ''' + db.confirmed_sql('o') + ''' AND o.created_at>=? AND o.created_at<? AND o.currency=? AND (?='' OR o.channel=?)''',(lo,hi,currency,channel,channel))]
         prevlo = (datetime.fromisoformat(lo)-timedelta(days=(end-start).days+1)).isoformat(' ')
         previous = c.execute("SELECT count(*) n,COALESCE(sum(total),0) total FROM orders WHERE created_at>=? AND created_at<? AND currency=? AND status='done' AND (?='' OR channel=?)",(prevlo,lo,currency,channel,channel)).fetchone()
         products = c.execute("""SELECT i.name,COALESCE(NULLIF(i.category_name,''),'Без сохранённой категории') category,sum(i.quantity) quantity,sum(i.price*i.quantity) amount FROM order_items i JOIN orders o ON o.id=i.order_id

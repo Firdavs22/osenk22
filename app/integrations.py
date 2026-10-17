@@ -99,13 +99,17 @@ def apply_payment(row, result):
                 from .store import notify_order
                 notify_order(c, row['order_id'])
                 if current != 'paid':
+                    from .customer_accounts import new_order
+                    new_order(c, row['order_id'])
                     db.auto_accept(c, row['order_id'])
         c.execute('UPDATE payments SET state=?,error=?,next_try=? WHERE order_id=?',
                   (status or 'pending', '', time.time()+60, row['order_id']))
 
 
-async def process_payment(oid):
+async def process_payment(oid, *, initialize_only=False):
     row = payment_row(oid)
+    if initialize_only and (row['payment_id'] or row['state'] != 'new'):
+        return
     cfg = unseal(row['credentials'])
     if not row['payment_id']:
         if row['state'] == 'new':
@@ -140,6 +144,17 @@ async def process_payment(oid):
         row = payment_row(oid)
     result = await bank_call(cfg, 'GetState', {'PaymentId': row['payment_id']})
     apply_payment(row, result)
+
+
+def payment_tracking(order, payment, subscribed=False):
+    pending = order['payment_method']=='tbank' and order['payment_status']=='pending' and order['status']!='cancelled'
+    expired = bool(payment and payment['expires']<=time.time())
+    return {'status':order['status'], 'payment_status':order['payment_status'],
+            'payment_state':payment['state'] if payment else '',
+            'payment_ready':bool(pending and payment and payment['url'] and not expired),
+            'payment_error':bool(payment and (payment['error'] or
+                (not payment['url'] and payment['state'] not in ('new','initializing')))), 'payment_expired':expired,
+            'subscribed':subscribed}
 
 
 async def bank_webhook(request: Request):

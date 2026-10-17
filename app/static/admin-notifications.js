@@ -5,13 +5,13 @@
   const note = document.querySelector('#browser-notifications-note');
   const badge = document.querySelector('#new-orders-count');
   const storageKey = 'shop-admin-order-alerts-v1';
-  const cursorKey = 'shop-admin-order-cursor-v1';
+  const cursorKey = 'shop-admin-order-cursor-v2';
   const dialog = document.querySelector('#order-inbox');
   const list = document.querySelector('#order-inbox-list');
   const inboxBadge = document.querySelector('#order-inbox-count');
   const inboxStatus = document.querySelector('#order-inbox-status');
   const readButton = document.querySelector('#order-inbox-read');
-  const seenKey = 'shop-admin-order-seen-v1';
+  const seenKey = 'shop-admin-order-seen-v2';
   const memory = new Map();
   let running = false, stopped = false, worker = null, latest = null, recent = [], rendered = '';
   const numeric = value => value!==null && /^\d+$/.test(value) ? Number(value) : null;
@@ -40,7 +40,7 @@
   function renderInbox() {
     if (latest===null) return;
     const seen = numeric(read(seenKey)) ?? latest;
-    const unread = recent.filter(order => order.id>seen).length;
+    const unread = recent.filter(order => order.event_id>seen).length;
     inboxBadge.hidden = unread===0;
     inboxBadge.textContent = unread ? String(unread) : '';
     opener.setAttribute('aria-label',unread ? `Уведомления о заказах: непрочитанных ${unread}` : 'Уведомления о заказах');
@@ -54,11 +54,11 @@
     const scroll = list.scrollTop;
     const nodes = recent.map(order => {
       const item = document.createElement('li');
-      item.classList.toggle('unread',order.id>seen);
+      item.classList.toggle('unread',order.event_id>seen);
       const link = document.createElement('a');
       link.href = '/admin/orders/'+order.id;
       link.dataset.order = order.id;
-      link.setAttribute('aria-label',`Заказ №${order.id}, ${order.status_label}${order.id>seen ? ', не прочитан' : ''}`);
+      link.setAttribute('aria-label',`Заказ №${order.id}, ${order.status_label}${order.event_id>seen ? ', не прочитан' : ''}`);
       const top = document.createElement('div'); top.className = 'inbox-order-top';
       const title = document.createElement('strong'); title.textContent = `Заказ №${order.id}`;
       const amount = document.createElement('span');

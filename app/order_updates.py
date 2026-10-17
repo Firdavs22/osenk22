@@ -111,11 +111,12 @@ async def link_telegram(request: Request, token: str):
 @router.get('/api/order/{token}/status')
 def public_status(token: str):
     with db.connect() as c:
-        order = c.execute('SELECT status,payment_status FROM orders WHERE public_token=?',(token,)).fetchone()
+        order = c.execute('SELECT status,payment_method,payment_status FROM orders WHERE public_token=?',(token,)).fetchone()
         if not order:
             raise HTTPException(404)
-        payment = c.execute('SELECT p.state,p.url FROM payments p JOIN orders o ON o.id=p.order_id WHERE o.public_token=?',(token,)).fetchone()
+        payment = c.execute('SELECT p.state,p.url,p.error,p.expires FROM payments p JOIN orders o ON o.id=p.order_id WHERE o.public_token=?',(token,)).fetchone()
         subscribed = bool(c.execute('SELECT 1 FROM order_subscriptions s JOIN orders o ON o.id=s.order_id WHERE o.public_token=?',(token,)).fetchone())
     # No customer details, phone/address or provider URL are returned by polling.
-    return {'status':order['status'],'payment_status':order['payment_status'],
-            'payment_state':payment['state'] if payment else '', 'payment_ready':bool(payment and payment['url']), 'subscribed':subscribed}
+    from .integrations import payment_tracking
+    from fastapi.responses import JSONResponse
+    return JSONResponse(payment_tracking(order,payment,subscribed),headers={'Cache-Control':'no-store'})

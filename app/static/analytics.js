@@ -25,12 +25,12 @@
       });
     }
     window.ym(Number(counter),'init',{defer:true,clickmap:false,trackLinks:false,accurateTrackBounce:false,webvisor:false,ecommerce:'dataLayer'});
-    window.ym(Number(counter),'hit',safe.href,{title:orderNode ? 'Заказ оформлен' : document.title, referer:location.origin+'/'});
+    window.ym(Number(counter),'hit',safe.href,{title:orderNode ? (JSON.parse(orderNode.dataset.order).purchase ? 'Заказ оформлен' : 'Ожидаем оплату') : document.title, referer:location.origin+'/'});
     const script = document.createElement('script'); script.async = true; script.src = 'https://mc.yandex.ru/metrika/tag.js';
     document.head.append(script);
     if (orderNode) {
       const order = JSON.parse(orderNode.dataset.order);
-      once(order,'created',() => goal('order_created'));
+      if (order.purchase) once(order,'created',() => goal('order_created'));
       if (order.purchase) once(order,'purchase',() => window.dataLayer.push({ecommerce:{currencyCode:order.currency,purchase:{actionField:{id:order.id,revenue:order.revenue},products:order.products}}}));
       if (order.paid) once(order,'paid',() => goal('payment_success'));
     }

@@ -190,8 +190,8 @@ async def logout(request: Request):
 def dashboard(request: Request):
     require_admin(request)
     with db.connect() as c:
-        orders = c.execute('SELECT * FROM orders ORDER BY id DESC LIMIT 8').fetchall()
-        counts = dict(c.execute('SELECT status,count(*) FROM orders GROUP BY status').fetchall())
+        orders = c.execute('SELECT * FROM orders WHERE ' + db.confirmed_sql() + ' ORDER BY id DESC LIMIT 8').fetchall()
+        counts = dict(c.execute('SELECT status,count(*) FROM orders WHERE ' + db.confirmed_sql() + ' GROUP BY status').fetchall())
         totals = c.execute("SELECT currency,sum(total) amount FROM orders WHERE status='done' GROUP BY currency").fetchall()
         product_count = c.execute('SELECT count(*) FROM products WHERE active=1').fetchone()[0]
     from .reporting import report
@@ -334,16 +334,16 @@ def orders_page(request: Request, status: str = '', page_num: int = 1, fragment:
         except ValueError as exc:
             error = str(exc)
             lo = hi = '~'  # Invalid filters must not silently show unrelated orders.
-    date_filter = " AND (?='' OR o.created_at>=?) AND (?='' OR o.created_at<?)"
+    date_filter = " AND " + db.confirmed_sql('o') + " AND (?='' OR o.created_at>=?) AND (?='' OR o.created_at<?)"
     dates = (lo, lo, hi, hi)
     with db.connect() as c:
         counts = dict(c.execute('SELECT status,count(*) FROM orders o WHERE 1=1' + date_filter + ' GROUP BY status', dates).fetchall())
         for key in ([status] if status else db.STATUSES):
             columns[key] = c.execute('''SELECT o.*,
                 (SELECT COALESCE(sum(quantity),0) FROM order_items WHERE order_id=o.id) item_count,
-                (SELECT count(*) FROM orders customer_orders WHERE
+                (SELECT count(*) FROM orders customer_orders WHERE ''' + db.confirmed_sql('customer_orders') + ''' AND (
                     (o.phone_key<>'' AND customer_orders.phone_key=o.phone_key)
-                    OR (o.phone_key='' AND customer_orders.id=o.id)) customer_order_count
+                    OR (o.phone_key='' AND customer_orders.id=o.id))) customer_order_count
                 FROM orders o WHERE status=?''' + date_filter + ' ORDER BY id DESC LIMIT 30 OFFSET ?',
                                      (key,*dates,(page_num-1)*30)).fetchall()
     return render(request, '_orders_board.html' if fragment else 'orders.html', columns=columns, counts=counts,
@@ -355,12 +355,12 @@ def orders_page(request: Request, status: str = '', page_num: int = 1, fragment:
 def order_feed(request: Request, after: int | None = None, inbox: bool = False):
     require_admin(request)
     with db.connect() as c:
-        latest = c.execute('SELECT COALESCE(max(id),0) FROM orders').fetchone()[0]
-        rows = [] if after is None else c.execute('SELECT id FROM orders WHERE id>? ORDER BY id LIMIT 50',
+        latest = c.execute('SELECT COALESCE(max(id),0) FROM order_intake').fetchone()[0]
+        rows = [] if after is None else c.execute('SELECT id,order_id FROM order_intake WHERE id>? ORDER BY id LIMIT 50',
                                                   (max(0,after),)).fetchall()
-        pending = c.execute("SELECT count(*) FROM orders WHERE status='new'").fetchone()[0]
-        recent = c.execute('SELECT id,status,total,currency,created_at FROM orders ORDER BY id DESC LIMIT 50').fetchall() if inbox else []
-    data = {'cursor':rows[-1]['id'] if rows else latest, 'orders':[r['id'] for r in rows], 'pending':pending}
+        pending = c.execute("SELECT count(*) FROM orders WHERE status='new' AND " + db.confirmed_sql()).fetchone()[0]
+        recent = c.execute('SELECT o.id,o.status,o.total,o.currency,o.created_at,e.id event_id FROM order_intake e JOIN orders o ON o.id=e.order_id ORDER BY e.id DESC LIMIT 50').fetchall() if inbox else []
+    data = {'cursor':rows[-1]['id'] if rows else latest, 'orders':[r['order_id'] for r in rows], 'pending':pending}
     if inbox:
         data.update(latest=latest, recent=[dict(r) | {'status_label': db.STATUSES.get(r['status'], r['status'])} for r in recent])
     return JSONResponse(data, headers={'Cache-Control': 'no-store'})

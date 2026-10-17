@@ -78,7 +78,7 @@ def test_order_feed_private_bounded_and_no_customer_data(client,monkeypatch):
     assert inbox['orders']==[51,52,53] and inbox['latest']==53
     assert len(inbox['recent'])==50 and inbox['recent'][0]['id']==53
     assert inbox['recent'][-1]['id']==4
-    assert set(inbox['recent'][0])=={'id','status','status_label','total','currency','created_at'}
+    assert set(inbox['recent'][0])=={'id','event_id','status','status_label','total','currency','created_at'}
     db.set_status(53,'accepted')
     assert client.get('/admin/order-feed?inbox=true').json()['recent'][0]['status_label']=='Принят'
 

@@ -84,6 +84,8 @@
   });
   $('#delivery-method').addEventListener('change', updateQuote);
   $('#delivery-district')?.addEventListener('change', updateQuote);
+  const paymentLabel = () => { $('.checkout-submit').textContent = form.elements.payment.value==='tbank' ? 'Перейти к оплате' : 'Подтвердить заказ'; };
+  form.elements.payment.addEventListener('change',paymentLabel); paymentLabel();
   form.addEventListener('submit', async event => {
     event.preventDefault(); if (!quote) { await updateQuote(); return; }
     $('.checkout-submit').disabled = true; error.textContent = '';

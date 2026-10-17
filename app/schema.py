@@ -107,6 +107,16 @@ def migrate(c):
     c.executemany('INSERT OR IGNORE INTO settings VALUES (?,?)', DEFAULTS.items())
     from .reporting import migrate as migrate_reporting
     migrate_reporting(c)
+    # Intake has its own cursor: an older online checkout can be paid after newer orders.
+    first_intake = not c.execute("SELECT 1 FROM sqlite_master WHERE type='table' AND name='order_intake'").fetchone()
+    c.execute('CREATE TABLE IF NOT EXISTS order_intake(id INTEGER PRIMARY KEY AUTOINCREMENT,order_id INTEGER NOT NULL UNIQUE REFERENCES orders(id))')
+    from .db import confirmed_sql
+    if first_intake:
+        c.execute('INSERT INTO order_intake(order_id) SELECT id FROM orders WHERE ' + confirmed_sql() + ' ORDER BY id')
+    for event, name in [('INSERT', 'order_intake_insert'), ('UPDATE OF payment_method,payment_status', 'order_intake_payment')]:
+        c.execute(f'''CREATE TRIGGER IF NOT EXISTS {name} AFTER {event} ON orders
+            WHEN {confirmed_sql('NEW')} AND NOT EXISTS(SELECT 1 FROM order_intake WHERE order_id=NEW.id)
+            BEGIN INSERT INTO order_intake(order_id) VALUES (NEW.id); END''')
     if not c.execute('SELECT 1 FROM slides LIMIT 1').fetchone():
         c.execute('INSERT INTO slides(title,subtitle) VALUES (?,?)',
                   ('У каждого вечера свой вкус.', 'Любимые роллы, нежный лосось и сеты для тех, кто рядом. Выбирайте — мы приготовим.'))

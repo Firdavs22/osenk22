@@ -19,6 +19,11 @@ DEFAULTS = {'shop_name': config.SHOP_NAME, 'currency': config.CURRENCY,
             'minimum_order': '50000', 'orders_open': '0', 'delivery_enabled': '1'}
 
 
+def confirmed_sql(alias=''):
+    prefix = alias + '.' if alias else ''
+    return f"({prefix}payment_method<>'tbank' OR {prefix}payment_status IN ('paid','refunded','partial_refund'))"
+
+
 @contextmanager
 def connect(write=False):
     config.prepare()
