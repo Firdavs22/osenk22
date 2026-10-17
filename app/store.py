@@ -240,7 +240,7 @@ def order_result(request: Request, token: str):
         order = c.execute('SELECT * FROM orders WHERE public_token=?', (token,)).fetchone()
         if not order:
             raise HTTPException(404)
-        payment = c.execute('SELECT state,url,error,expires FROM payments WHERE order_id=?', (order['id'],)).fetchone()
+        payment = c.execute('SELECT state,url,error,expires,credentials FROM payments WHERE order_id=?', (order['id'],)).fetchone()
         items = c.execute('SELECT * FROM order_items WHERE order_id=?', (order['id'],)).fetchall()
         subscribed = bool(c.execute('SELECT 1 FROM order_subscriptions WHERE order_id=?',(order['id'],)).fetchone())
     from .order_updates import telegram_state
@@ -253,13 +253,20 @@ def order_result(request: Request, token: str):
                      'currency': 'RUB' if order['currency'] in ('₽','RUB','руб.') else order['currency'],
                      'products':[{'id':str(p['product_id'] or p['id']), 'name':p['name'], 'price':p['price']/100, 'quantity':p['quantity']} for p in items]}
     from .integrations import payment_tracking
+    tracking = payment_tracking(order,payment,subscribed)
+    payment_terminal = ''
+    if tracking['payment_ready']:
+        from .vault import unseal
+        # The public terminal ID must match this payment, even after switching from demo to live.
+        payment_terminal = unseal(payment['credentials']).get('terminal','')
+        request.state.bank_payment = bool(payment_terminal)
     waiting = order['payment_method']=='tbank' and order['payment_status'] not in ('paid','refunded','partial_refund')
     return render(request, 'store_order.html', order=order, payment=payment, items=items, awaiting_payment=waiting,
                   auto_pay=waiting and order['status']!='cancelled' and request.query_params.get('pay')=='1',
                   can_start_payment=order['user_id']==request.session.get('visitor'),
                   ecommerce=ecommerce,
                   subscribed=subscribed, telegram=telegram_state(), account_links=links(),
-                  tracking=payment_tracking(order,payment,subscribed))
+                  tracking=tracking, payment_terminal=payment_terminal)
 
 
 @router.post('/api/order/{token}/payment')

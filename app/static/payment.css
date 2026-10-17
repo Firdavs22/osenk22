@@ -1,0 +1,15 @@
+#payment-dialog{width:560px;max-width:calc(100vw - 24px);max-height:calc(100dvh - 24px);padding:22px;margin:auto;overscroll-behavior:contain}
+.payment-heading{display:flex;align-items:flex-start;justify-content:space-between;gap:16px;margin-bottom:14px}
+.payment-heading h2{font-size:24px;margin:0 0 8px;letter-spacing:-.5px}
+.payment-heading strong{font-size:20px}
+.payment-heading button{flex-shrink:0;width:44px;height:44px;border-radius:50%;background:#302925;color:var(--ink);font-size:28px;line-height:1}
+#payment-help,#payment-message,.payment-footer p{font-size:13px;line-height:1.5;color:var(--muted)}
+#payment-message{padding:10px 12px;background:#29211e;border-radius:8px;color:#f4c2a1}
+#payment-container{min-height:280px;width:100%;overflow:hidden;border-radius:10px;background:#fff;color:#171717}
+#payment-container:empty{display:none}
+#payment-container iframe{display:block;width:100%;min-height:420px;border:0}
+.payment-footer{margin-top:18px}
+.payment-footer a{display:inline-block;font-size:14px;color:#f4c2a1;text-decoration:underline;padding:8px 0}
+.payment-footer p{margin:8px 0 0}
+body.payment-open{overflow:hidden}
+@media(max-width:480px){#payment-dialog{padding:16px;max-width:calc(100vw - 12px);max-height:calc(100dvh - 12px)}.payment-heading h2{font-size:22px}#payment-container iframe{min-height:390px}}

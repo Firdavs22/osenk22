@@ -18,6 +18,8 @@ from .vault import get_config, seal, unseal
 
 log = logging.getLogger(__name__)
 BANK_API = 'https://securepay.tinkoff.ru/v2/'
+BANK_PAYMENT_HOSTS = frozenset(('securepay.tinkoff.ru', 'securepay.tbank.ru',
+    'securepayments.tinkoff.ru', 'securepayments.tbank.ru', 'pay.tbank.ru', 'pay.tbank-online.com'))
 IIKO_API = 'https://api-ru.iiko.services'
 TAXES = ('none', 'vat0', 'vat5', 'vat7', 'vat10', 'vat22', 'vat105', 'vat107', 'vat110', 'vat122')
 TAXATIONS = ('osn', 'usn_income', 'usn_income_outcome', 'esn', 'patent')
@@ -127,7 +129,8 @@ async def process_payment(oid, *, initialize_only=False):
                 'RedirectDueDate': datetime.fromtimestamp(row['expires'], timezone.utc).isoformat(timespec='seconds')})
             url = result.get('PaymentURL', '')
             parsed = urlparse(url)
-            if parsed.scheme != 'https' or parsed.hostname not in ('securepay.tinkoff.ru', 'securepay.tbank.ru'):
+            if (parsed.scheme != 'https' or parsed.hostname not in BANK_PAYMENT_HOSTS or
+                    parsed.username is not None or parsed.password is not None or parsed.port not in (None,443)):
                 raise ValueError('Банк вернул неизвестный адрес оплаты; нужна проверка')
             if result.get('Amount') != row['total'] or str(result.get('OrderId')) != row['bank_order'] or not result.get('PaymentId'):
                 raise ValueError('Банк вернул несовпадающие параметры заказа')

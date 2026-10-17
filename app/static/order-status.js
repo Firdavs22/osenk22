@@ -5,12 +5,14 @@
   const note = document.getElementById('tracking-note');
   const original = JSON.parse(node.dataset.version);
   const waiting = original.payment_status==='pending';
+  let timer, refreshing = false;
   function openPayment() {
     const link = document.querySelector('[data-payment-link]');
     if (node.dataset.autoPay!=='1' || !link || !original.payment_ready) return;
     // Remove auto-navigation before leaving, so Back / bank return cannot loop.
     node.dataset.autoPay = '0';
     history.replaceState(null,'',location.pathname);
+    if (window.StorePayment) { window.StorePayment.open(); return; }
     const platform = document.documentElement.dataset.miniApp;
     const app = platform==='telegram' ? window.Telegram?.WebApp : platform==='max' ? window.WebApp : null;
     if (typeof app?.openLink==='function') {
@@ -19,6 +21,9 @@
     location.assign(link.href);
   }
   async function refresh() {
+    if (refreshing) return;
+    clearTimeout(timer);
+    refreshing = true;
     if (!document.hidden) {
       const controller = new AbortController();
       const timeout = setTimeout(() => controller.abort(), 10000);
@@ -26,7 +31,10 @@
         const response = await fetch(node.dataset.url, {credentials: 'same-origin', cache: 'no-store', signal:controller.signal});
         if (!response.ok) throw Error();
         const next = await response.json();
-        if (Object.keys(original).some(key => original[key] !== next[key])) {
+        // Intermediate bank states must never reload a live card / 3DS form.
+        const keys = window.StorePayment?.isOpen() ? ['status','payment_status','payment_expired'] :
+          Object.keys(original).filter(key => key!=='payment_state');
+        if (keys.some(key => original[key] !== next[key])) {
           location.reload(); return;
         }
         note.textContent = waiting ? 'Проверяем оплату…' : 'Статус обновляется автоматически каждые 10 секунд.';
@@ -36,7 +44,8 @@
         clearTimeout(timeout);
       }
     }
-    setTimeout(refresh, waiting ? 3000 : 10000);
+    refreshing = false;
+    timer = setTimeout(refresh, waiting ? 3000 : 10000);
   }
   async function start() {
     openPayment();
@@ -51,5 +60,7 @@
     }
     refresh();
   }
+  document.addEventListener('payment:check',refresh);
+  document.addEventListener('visibilitychange',() => { if (!document.hidden) refresh(); });
   start();
 })();

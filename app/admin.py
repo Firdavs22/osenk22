@@ -98,6 +98,16 @@ async def headers(request: Request, call_next):
         policy = policy.replace("connect-src 'self'", "connect-src 'self' https://mc.yandex.ru https://mc.yandex.com https://mc.webvisor.org")
         policy = policy.replace("img-src 'self' data:", "img-src 'self' data: https://mc.yandex.ru https://mc.yandex.com")
         response.headers['Content-Security-Policy'] = policy
+    if getattr(request.state, 'bank_payment', False) and response.headers.get('content-type','').startswith('text/html'):
+        # Only a payable order page loads the bank SDK. 3DS can use any issuer's HTTPS frame.
+        bank_hosts = 'https://*.tbank.ru https://*.tinkoff.ru https://*.tcsbank.ru https://*.nspk.ru https://*.t-static.ru'
+        policy = response.headers['Content-Security-Policy']
+        for directive in ('script-src', 'connect-src'):
+            policy = policy.replace(directive+" 'self'", directive+" 'self' "+bank_hosts)
+        policy = policy.replace("connect-src 'self'", "connect-src 'self' https://payapi.tbank-online.com")
+        policy = policy.replace("img-src 'self' data:", "img-src 'self' data: "+bank_hosts)
+        policy = policy.replace("style-src 'self'", "style-src 'self' 'unsafe-inline' "+bank_hosts)
+        response.headers['Content-Security-Policy'] = policy+'; frame-src https:'
     return response
 
 

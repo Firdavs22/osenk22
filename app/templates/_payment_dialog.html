@@ -1,0 +1,7 @@
+<dialog id="payment-dialog" aria-labelledby="payment-title" aria-describedby="payment-help" data-terminal="{{ payment_terminal }}">
+  <header class="payment-heading"><div><h2 id="payment-title">Оплата заказа</h2><strong>{{ order.total|money(order.currency) }}</strong></div><button type="button" data-close-payment aria-label="Закрыть оплату" autofocus>×</button></header>
+  <p id="payment-help">Оплата через Т-Банк. Данные карты вводятся в форме банка.</p>
+  <p id="payment-message" role="status" aria-live="polite">Загружаем форму оплаты…</p>
+  <div id="payment-container" aria-busy="true"></div>
+  <footer class="payment-footer"><a href="{{ payment.url }}" data-payment-external target="_blank" rel="noopener noreferrer">Открыть оплату отдельно ↗</a><p>Закрытие окна не отменяет заявку. После оплаты статус обновится автоматически.</p></footer>
+</dialog>

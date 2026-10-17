@@ -3,6 +3,7 @@ import time
 from urllib.parse import urlsplit
 
 import httpx
+import pytest
 
 from app import db, integrations as bank, customer_accounts as accounts
 from app.vault import set_config
@@ -133,6 +134,67 @@ def test_failed_expired_and_cancelled_payments_never_show_active_payment_link(cl
         c.execute("UPDATE orders SET payment_status='failed'")
     assert not client.get('/api'+path+'/status').json()['payment_ready']
     assert 'data-payment-link' not in client.get(path+'?pay=1').text
+
     with db.connect(True) as c:c.execute("UPDATE orders SET payment_status='pending',status='cancelled'")
     assert not client.get('/api'+path+'/status').json()['payment_ready']
     assert 'data-payment-link' not in client.get(path+'?pay=1').text
+
+
+def test_iframe_uses_payment_terminal_snapshot_without_exposing_credentials(client,monkeypatch):
+    headers,data,path=checkout(client)
+    calls=[];fake_init(monkeypatch,calls)
+    client.post('/api'+path+'/payment',headers=headers,json={})
+    # Switching the shop to a live terminal must not change an existing demo payment.
+    set_config('tbank',{'terminal':'live-terminal','password':'live-password'})
+    response=client.get(path+'?pay=1')
+    assert 'data-terminal="test-terminal"' in response.text
+    assert 'id="payment-dialog"' in response.text and 'data-payment-external' in response.text
+    assert all(secret not in response.text for secret in ('test-secret','live-password','live-terminal'))
+    assert calls==['Init']
+    # The CSP exception is limited to a payable order; embedding the shop itself stays forbidden.
+    policy=response.headers['content-security-policy']
+    assert 'https://*.t-static.ru' in policy and 'frame-src https:' in policy
+    assert 'https://payapi.tbank-online.com' in policy
+    assert "frame-ancestors 'none'" in policy and response.headers['x-frame-options']=='DENY'
+    assert "script-src 'self'" in policy and "'unsafe-eval'" not in policy
+    for url in ('/','/admin/login','/order/unknown','/api'+path+'/status'):
+        assert 'https://*.t-static.ru' not in client.get(url).headers['content-security-policy']
+    confirm(1)
+    response=client.get(path+'?pay=1')
+    assert 'id="payment-dialog"' not in response.text and '/static/payment.js' not in response.text
+    assert 'https://*.t-static.ru' not in response.headers['content-security-policy']
+
+
+def test_failed_and_expired_orders_do_not_load_bank_widget(client,monkeypatch):
+    headers,data,path=checkout(client)
+    assert 'id="payment-dialog"' not in client.get(path).text
+    calls=[];fake_init(monkeypatch,calls)
+    client.post('/api'+path+'/payment',headers=headers,json={})
+    for status,expires in (('failed',time.time()+300),('pending',time.time()-1)):
+        with db.connect(True) as c:
+            c.execute('UPDATE orders SET payment_status=?',(status,))
+            c.execute('UPDATE payments SET expires=?',(expires,))
+        response=client.get(path+'?pay=1')
+        assert 'id="payment-dialog"' not in response.text
+        assert 'https://*.t-static.ru' not in response.headers['content-security-policy']
+
+
+@pytest.mark.parametrize('url,allowed',[
+    ('https://securepayments.tbank.ru/demo',True),
+    ('https://securepayments.tinkoff.ru/demo',True),
+    ('https://pay.tbank-online.com/demo',True),
+    ('http://securepayments.tbank.ru/demo',False),
+    ('https://securepayments.tbank.ru.evil.example/demo',False),
+    ('https://evil.example/demo',False),
+    ('https://user:secret@securepayments.tbank.ru/demo',False),
+    ('https://securepayments.tbank.ru:8443/demo',False),
+])
+def test_bank_payment_url_hosts(client,monkeypatch,url,allowed):
+    headers,data,path=checkout(client)
+    async def init(cfg,method,body):
+        return {'Amount':body['Amount'],'OrderId':body['OrderId'],'PaymentId':'demo','PaymentURL':url}
+    monkeypatch.setattr(bank,'bank_call',init)
+    client.post('/api'+path+'/payment',headers=headers,json={})
+    state=client.get('/api'+path+'/status').json()
+    assert state['payment_ready'] is allowed
+    assert state['payment_status']=='pending'
