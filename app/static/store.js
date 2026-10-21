@@ -50,7 +50,8 @@
     const version = ++quoteVersion; quote = null; $('.checkout-submit').disabled = true;
     const method = $('#delivery-method').value;
     if ($('#district-field')) { $('#district-field').hidden = method !== 'delivery'; form.elements.district.required = method === 'delivery'; }
-    $('#address-field').hidden = method !== 'delivery'; form.elements.address.required = method === 'delivery';
+    $('#address-field').hidden = method !== 'delivery';
+    $('#address-field').disabled = method !== 'delivery';
     try {
       const next = await api('/api/quote', {method, district: form.elements.district?.value || ''});
       if (version !== quoteVersion) return;
@@ -92,6 +93,13 @@
     event.preventDefault(); if (!quote) { await updateQuote(); return; }
     $('.checkout-submit').disabled = true; error.textContent = '';
     const data = Object.fromEntries(new FormData(form)); data.consent = form.elements.consent.checked;
+    if (data.method === 'delivery') {
+      data.address_parts = {};
+      for (const key of ['city','street','house','building','flat','entrance','floor','doorphone']) {
+        data.address_parts[key] = data['address_' + key] || '';
+        delete data['address_' + key];
+      }
+    }
     try {
       const result = await api('/api/checkout', {...data, key: quote.key, fingerprint: quote.fingerprint});
       location.assign(result.url);

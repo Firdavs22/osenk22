@@ -19,3 +19,6 @@ html[data-mini-app="telegram"] body, html[data-mini-app="max"] body { padding-bo
 .floating-cart-label strong{font-size:12px;font-weight:400}.floating-cart svg{flex-shrink:0}
 body:has(.floating-cart:not([hidden])) .site-footer{padding-bottom:110px}
 @media(max-width:760px){.floating-cart{left:18px;right:18px;bottom:max(15px,env(safe-area-inset-bottom));justify-content:flex-start}.floating-cart [data-cart-count]{margin-left:auto}}
+
+.delivery-address{border:0;margin:0;padding:0;min-width:0}.delivery-address legend{padding:0;margin-bottom:14px;font-weight:700}.delivery-address .two,.address-row{margin-bottom:14px}.address-row{display:grid;grid-template-columns:repeat(3,minmax(0,1fr));gap:14px}.delivery-address label,.delivery-address input{min-width:0}.delivery-address .small{margin:0}
+@media(max-width:480px){.address-row{grid-template-columns:repeat(2,minmax(0,1fr))}.address-row label:last-child{grid-column:1/-1}}

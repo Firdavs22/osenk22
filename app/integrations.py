@@ -240,9 +240,15 @@ def iiko_payload(row, cfg):
         # Free-form address is supported by AddressCity on restaurants configured for City.
         if not cfg.get('city_format'):
             raise ValueError('Для доставки включите формат адреса City в iiko и настройках интеграции')
-        if len(order['address']) > 250:
-            raise ValueError('Для iiko адрес должен быть не длиннее 250 символов')
-        body['deliveryPoint'] = {'address': {'type': 'city', 'line1': order['address'][:250]}}
+        parts = json.loads(order['address_parts'])
+        if parts:
+            from .delivery_address import for_iiko
+            address = for_iiko(parts)
+        else:
+            if len(order['address']) > 250:
+                raise ValueError('Для iiko адрес должен быть не длиннее 250 символов')
+            address = {'type': 'city', 'line1': order['address']}
+        body['deliveryPoint'] = {'address': address}
     if order['payment_status']=='paid':
         if not cfg.get('payment_type'):
             raise ValueError('Укажите UUID типа внешней оплаты iiko')

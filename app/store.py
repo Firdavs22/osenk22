@@ -1,5 +1,6 @@
 import hashlib
 import hmac
+import json
 import re
 import secrets
 import time
@@ -181,7 +182,14 @@ async def checkout(request: Request):
         if (payment not in ('cash', 'card', 'tbank') or (payment == 'tbank' and not payment_enabled())
                 or (payment == 'card' and db.settings().get('card_on_receipt') != '1')):
             raise ValueError('Выбранный способ оплаты недоступен')
-        address = contact(data, 'address', 10, 400) if method == 'delivery' else db.settings()['address']
+        address_parts = {}
+        if method == 'delivery' and 'address_parts' in data:
+            from .delivery_address import normalize, full
+            address_parts = normalize(data['address_parts'])
+            address = full(address_parts)
+        else:
+            # Accept older open storefronts and preserve free-form messenger addresses.
+            address = contact(data, 'address', 10, 400) if method == 'delivery' else db.settings()['address']
         with db.connect(True) as c:
             # Transaction serializes concurrent duplicate submissions and cart changes.
             old = c.execute('SELECT * FROM orders WHERE token=? AND user_id=?', (key, user)).fetchone()
@@ -194,8 +202,8 @@ async def checkout(request: Request):
             oid = c.execute("""INSERT INTO orders(token,user_id,customer,phone,method,address,comment,subtotal,delivery,total,currency,channel,payment_method,payment_status,public_token,consent_at,notified)
                 VALUES (?,?,?,?,?,?,?,?,?,?,?,'web',?,?,?,strftime('%Y-%m-%d %H:%M:%S','now'),0)""",
                 (key,user,customer,phone,method,address,comment,q['subtotal'],q['delivery'],q['total'],q['currency'],payment,'pending' if payment=='tbank' else 'unpaid',public_token)).lastrowid
-            c.execute('UPDATE orders SET discount=?,district=?,legal_snapshot=? WHERE id=?',
-                      (q['discount'],q['district'],q['legal_snapshot'],oid))
+            c.execute('UPDATE orders SET discount=?,district=?,legal_snapshot=?,address_parts=? WHERE id=?',
+                      (q['discount'],q['district'],q['legal_snapshot'],json.dumps(address_parts,ensure_ascii=False),oid))
             # Source attribution only: it does not authenticate a messenger user.
             from .reporting import record
             record(c, oid, request)
