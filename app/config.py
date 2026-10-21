@@ -18,6 +18,7 @@ SHOP_NAME = os.getenv('SHOP_NAME', 'Осень Кусна')
 CURRENCY = os.getenv('CURRENCY', '₽')
 PUBLIC_URL = os.getenv('PUBLIC_URL', '')
 MAX_CA_BUNDLE = os.getenv('MAX_CA_BUNDLE', '')
+TBANK_CA_BUNDLE = os.getenv('TBANK_CA_BUNDLE', '')
 
 
 def prepare():

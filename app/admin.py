@@ -1,5 +1,6 @@
 import hmac
 import io
+import json
 import secrets
 import sqlite3
 import warnings
@@ -148,7 +149,7 @@ def render(request, name, **context):
 
 def redirect(path, error=None, ok=None):
     params = {'error': str(error)} if error else ({'ok': ok} if ok else {})
-    return RedirectResponse(path + ('?' + urlencode(params) if params else ''), status_code=303)
+    return RedirectResponse(path + (('&' if '?' in path else '?') + urlencode(params) if params else ''), status_code=303)
 
 
 def field(form, name, maximum=200, required=True):
@@ -218,6 +219,46 @@ def products_page(request: Request):
 def new_product(request: Request):
     require_admin(request)
     return render(request, 'product_form.html', product=None, categories=db.categories(), page='products')
+
+
+@app.get('/admin/menu-order')
+def menu_order(request: Request, category: int = 0):
+    require_admin(request)
+    categories = db.categories()
+    if not category and categories:
+        category = categories[0]['id']
+    if category and category not in {c['id'] for c in categories}:
+        raise HTTPException(404, 'Категория не найдена')
+    products = db.products(category=category) if category else []
+    return render(request, 'menu_order.html', categories=categories, products=products,
+                  category=category, category_ids=[c['id'] for c in categories],
+                  product_ids=[p['id'] for p in products], page='products')
+
+
+@app.post('/admin/menu-order')
+async def save_menu_order(request: Request):
+    form = await form_data(request)
+    destination = '/admin/menu-order'
+    try:
+        kind = form.get('kind')
+        category = int(form.get('category') or 0)
+        destination += '?category='+str(category)
+        ids = json.loads(str(form.get('ids','[]')))
+        if (kind not in ('categories','products') or not isinstance(ids,list) or
+                any(type(i) is not int or i<1 for i in ids) or len(ids)!=len(set(ids))):
+            raise ValueError('Некорректный порядок меню. Обновите страницу.')
+        table = 'categories' if kind=='categories' else 'products'
+        with db.connect(True) as c:
+            rows = c.execute('SELECT id FROM categories' if kind=='categories' else
+                'SELECT id FROM products WHERE category_id=?', () if kind=='categories' else (category,)).fetchall()
+            if set(ids)!={r['id'] for r in rows}:
+                raise ValueError('Меню изменилось. Обновите страницу и повторите сохранение.')
+            c.executemany(f'UPDATE {table} SET position=? WHERE id=?',enumerate(ids))
+        return redirect(destination,ok='Порядок меню сохранён')
+    except (ValueError,TypeError):
+        return redirect(destination,error='Не удалось сохранить порядок: меню изменилось или данные неверны. Обновите страницу.')
+    finally:
+        await form.close()
 
 
 @app.get('/admin/products/{pid:int}')

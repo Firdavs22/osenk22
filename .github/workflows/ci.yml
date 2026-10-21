@@ -41,3 +41,4 @@ jobs:
         run: |
           bash -n deploy/install.sh
           bash -n deploy/setup-max-ca.sh
+          bash -n deploy/setup-tbank-ca.sh

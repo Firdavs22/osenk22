@@ -15,6 +15,7 @@ from fastapi.responses import PlainTextResponse
 
 from . import db
 from .vault import get_config, seal, unseal
+from .bank_connection import BankError, diagnostic, provider_error, tls_context
 
 log = logging.getLogger(__name__)
 BANK_API = 'https://securepay.tinkoff.ru/v2/'
@@ -51,13 +52,21 @@ def bank_token(data, password):
 async def bank_call(cfg, method, data):
     body = {'TerminalKey': cfg['terminal'], **data}
     body['Token'] = bank_token(body, cfg['password'])
-    async with httpx.AsyncClient(timeout=15, follow_redirects=False) as client:
-        response = await client.post(BANK_API + method, json=body)
-        response.raise_for_status()
-        result = response.json()
+    try:
+        async with httpx.AsyncClient(timeout=15, verify=tls_context(), trust_env=False, follow_redirects=False) as client:
+            response = await client.post(BANK_API + method, json=body)
+            response.raise_for_status()
+            try:
+                result = response.json()
+            except ValueError:
+                raise BankError(f'Т-Банк: {method} — ответ не в формате JSON.') from None
+            if not isinstance(result,dict):
+                raise BankError(f'Т-Банк: {method} — некорректный формат ответа.')
+    except Exception as exc:
+        raise BankError(diagnostic(exc)) from exc
     if result.get('Success') is not True:
         # Never log/echo provider responses: they can contain credentials and personal data.
-        raise ValueError('Банк отклонил запрос. Проверьте операцию в кабинете эквайринга.')
+        raise provider_error(method,result)
     return result
 
 
@@ -122,11 +131,17 @@ async def process_payment(oid, *, initialize_only=False):
             if not claimed:
                 return
             origin = cfg['public_url'].rstrip('/')
-            result = await bank_call(cfg, 'Init', {'Amount': row['total'], 'OrderId': row['bank_order'],
+            try:
+                result = await bank_call(cfg, 'Init', {'Amount': row['total'], 'OrderId': row['bank_order'],
                 'Description': f'Заказ №{oid}', 'PayType': 'O', 'Receipt': json.loads(row['receipt']),
+                'DATA': {'OperationInitiatorType':'0'},
                 'NotificationURL': origin+'/api/payments/tbank/webhook',
                 'SuccessURL': origin+'/order/'+row['public_token'], 'FailURL': origin+'/order/'+row['public_token'],
                 'RedirectDueDate': datetime.fromtimestamp(row['expires'], timezone.utc).isoformat(timespec='seconds')})
+            except Exception as exc:
+                with db.connect(True) as c:
+                    c.execute('UPDATE payments SET init_error=? WHERE order_id=?',(diagnostic(exc),oid))
+                raise
             url = result.get('PaymentURL', '')
             parsed = urlparse(url)
             if (parsed.scheme != 'https' or parsed.hostname not in BANK_PAYMENT_HOSTS or
@@ -280,7 +295,7 @@ async def tick():
                         # Keep checking settled payments for later refunds, without a hot loop.
                         c.execute("UPDATE payments SET next_try=?,attempts=0 WHERE order_id=? AND state IN ('CONFIRMED','PARTIAL_REFUNDED')", (time.time()+3600,oid))
             except Exception as exc:
-                message = str(exc) if type(exc) is ValueError else 'Нет подтверждения от сервиса. Повторим проверку автоматически.'
+                message = diagnostic(exc) if table=='payments' else (str(exc) if type(exc) is ValueError else 'Нет подтверждения от сервиса. Повторим проверку автоматически.')
                 with db.connect(True) as c:
                     c.execute(f'UPDATE {table} SET error=? WHERE order_id=?', (message, oid))
                 log.warning('%s order %s: %s', table, oid, type(exc).__name__)

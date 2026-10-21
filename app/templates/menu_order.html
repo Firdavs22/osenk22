@@ -1,0 +1,11 @@
+{% extends 'base.html' %}{% block title %}Порядок меню{% endblock %}{% block content %}
+<header><div><p class="eyebrow">КАТАЛОГ</p><h1>Порядок меню</h1><p class="muted">Перемещайте категории и блюда стрелками, затем сохраняйте. Этот порядок используется на сайте и в ботах. Обновление из iiko его не сбрасывает.</p></div><a href="/admin/products">← Меню и товары</a></header>
+<link rel="stylesheet" href="/static/menu-order.css"><script src="/static/menu-order.js" defer></script>
+{% macro order_list(rows, kind, ids) %}
+<form method="post" action="/admin/menu-order" data-menu-order><input type="hidden" name="csrf" value="{{ csrf }}"><input type="hidden" name="kind" value="{{ kind }}"><input type="hidden" name="category" value="{{ category }}"><input type="hidden" name="ids" value='{{ ids|tojson }}'>
+<ol class="menu-order-list">{% for row in rows %}<li data-id="{{ row.id }}"><span class="menu-order-name">{{ row.name }}{% if kind=='products' and not row.active %}<small>Скрыто</small>{% endif %}</span><div class="menu-order-controls"><button type="button" data-move="up" aria-label="Выше: {{ row.name }}" {{ 'disabled' if loop.first }}>↑</button><button type="button" data-move="down" aria-label="Ниже: {{ row.name }}" {{ 'disabled' if loop.last }}>↓</button></div></li>{% else %}<li>Пока пусто</li>{% endfor %}</ol>
+<p class="muted" data-order-note role="status">{% if rows %}Изменений нет{% endif %}</p><button class="primary" {{ 'disabled' if not rows }}>Сохранить порядок {{ 'категорий' if kind=='categories' else 'блюд' }}</button></form>
+{% endmacro %}
+<section class="panel padded"><h2>Категории</h2>{{ order_list(categories,'categories',category_ids) }}</section>
+<section class="panel padded"><h2>Блюда в категории</h2><form method="get" action="/admin/menu-order" class="menu-order-filter"><label>Категория<select name="category">{% for c in categories %}<option value="{{ c.id }}" {{ 'selected' if c.id==category }}>{{ c.name }}</option>{% endfor %}</select></label><button>Показать</button></form>{{ order_list(products,'products',product_ids) }}</section>
+{% endblock %}

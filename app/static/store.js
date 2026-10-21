@@ -30,6 +30,8 @@
   function element(tag, text, cls) { const node = document.createElement(tag); if (text !== undefined) node.textContent = text; if (cls) node.className = cls; return node; }
   function renderCart(cart) {
     $$('[data-cart-count]').forEach(n => n.textContent = cart.quantity);
+    $$('.floating-cart').forEach(n => n.hidden = cart.quantity===0);
+    $$('[data-cart-subtotal]').forEach(n => n.textContent = money(cart.subtotal));
     const container = $('#cart-items'); container.replaceChildren();
     form.hidden = !cart.items.length; $('#cart-empty').hidden = !!cart.items.length;
     for (const p of cart.items) {

@@ -1,0 +1,8 @@
+.menu-order-list{list-style:decimal;padding-left:28px;max-width:850px}
+.menu-order-list li{padding:10px 8px;border-bottom:1px solid var(--line,#423832);position:relative;min-height:64px;padding-right:112px;overflow-wrap:anywhere}
+.menu-order-name{display:block;padding-top:9px}.menu-order-name small{display:block;color:#b8aaa1;font-size:12px}
+.menu-order-controls{display:flex;gap:8px;position:absolute;right:0;top:8px}
+.menu-order-controls button{min-width:44px;min-height:44px;font-size:20px;padding:6px}
+.menu-order-controls button:disabled{opacity:.3;cursor:default}
+.menu-order-filter{display:flex;align-items:end;gap:14px;margin:20px 0;flex-wrap:wrap}
+.menu-order-filter label{flex:1;min-width:140px;max-width:500px}

@@ -44,7 +44,7 @@ def save(c, sid, step, data):
 
 
 def catalog(c, cfg, page=0):
-    cats=c.execute('SELECT * FROM categories WHERE EXISTS(SELECT 1 FROM products p WHERE p.category_id=categories.id AND p.active=1) ORDER BY id').fetchall()
+    cats=c.execute('SELECT * FROM categories WHERE EXISTS(SELECT 1 FROM products p WHERE p.category_id=categories.id AND p.active=1) ORDER BY position,id').fetchall()
     page=min(page,max(0,(len(cats)-1)//20))
     rows=[[button(cat['name'],f'cat:{cat["id"]}:0')] for cat in cats[page*20:page*20+20]]
     nav=[]
@@ -179,7 +179,7 @@ def dispatch(c,cfg,event,sess,user,key,step,data):
         return catalog(c,cfg,int(action.split(':')[1]) if ':' in action else 0)
     if action.startswith('cat:'):
         _,cat,page=action.split(':');page=int(page)
-        items=c.execute('SELECT * FROM products WHERE category_id=? AND active=1 ORDER BY id',(int(cat),)).fetchall()
+        items=c.execute('SELECT * FROM products WHERE category_id=? AND active=1 ORDER BY position,id DESC',(int(cat),)).fetchall()
         page=min(page,max(0,(len(items)-1)//8))
         rows=[[button(p['name'][:75]+' · '+db.money(p['price']),f'product:{p["id"]}')] for p in items[page*8:page*8+8]]
         nav=[]

@@ -13,3 +13,9 @@ html[data-mini-app="telegram"] body, html[data-mini-app="max"] body { padding-bo
 
 .category-tabs,.tag-tabs{scrollbar-width:none;overflow-x:auto;max-width:100%;cursor:grab;overscroll-behavior-x:contain}.category-tabs::-webkit-scrollbar,.tag-tabs::-webkit-scrollbar{display:none}
 .category-tabs button,.tag-tabs button{flex:0 0 auto}.category-tabs.dragging,.tag-tabs.dragging{cursor:grabbing;user-select:none}.category-tabs.dragging button,.tag-tabs.dragging button{cursor:grabbing}
+
+.floating-cart{display:flex;position:fixed;right:24px;bottom:24px;left:auto;align-items:center;gap:14px;z-index:5;box-shadow:0 8px 30px #0008;min-height:60px;border:1px solid #ed8372;border-radius:12px}
+.floating-cart .floating-cart-label{display:flex;flex-direction:column;align-items:flex-start;background:none;margin:0;padding:0;gap:4px;font-size:14px}
+.floating-cart-label strong{font-size:12px;font-weight:400}.floating-cart svg{flex-shrink:0}
+body:has(.floating-cart:not([hidden])) .site-footer{padding-bottom:110px}
+@media(max-width:760px){.floating-cart{left:18px;right:18px;bottom:max(15px,env(safe-area-inset-bottom));justify-content:flex-start}.floating-cart [data-cart-count]{margin-left:auto}}

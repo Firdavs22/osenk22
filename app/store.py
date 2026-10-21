@@ -277,14 +277,14 @@ async def start_payment(request: Request, token: str):
                           (token,request.session.get('visitor'))).fetchone()
     if not order:
         raise HTTPException(404)
-    from .integrations import process_payment, payment_row, log
+    from .integrations import process_payment, payment_row, log, diagnostic
     row = payment_row(order['id'])
     if row and order['status']!='cancelled' and order['payment_status']=='pending' and row['expires']>time.time():
         try:
             # Claim once, outside the checkout transaction. The worker recovers timeouts.
             await process_payment(order['id'], initialize_only=True)
         except Exception as exc:
-            message = str(exc) if type(exc) is ValueError else 'Нет подтверждения от банка. Повторим проверку автоматически.'
+            message = diagnostic(exc)
             with db.connect(True) as c:
                 c.execute('UPDATE payments SET error=? WHERE order_id=?', (message,order['id']))
             log.warning('Payment initialization order %s: %s', order['id'], type(exc).__name__)

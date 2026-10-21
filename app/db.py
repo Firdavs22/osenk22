@@ -108,7 +108,7 @@ def parse_money(value, allow_zero=True):
 
 def categories():
     with connect() as c:
-        return c.execute('SELECT * FROM categories ORDER BY id').fetchall()
+        return c.execute('SELECT * FROM categories ORDER BY position,id').fetchall()
 
 
 def products(category=None, active=False):
@@ -120,7 +120,7 @@ def products(category=None, active=False):
     if active:
         sql += ' AND active=1'
     with connect() as c:
-        return c.execute(sql + ' ORDER BY p.id DESC', args).fetchall()
+        return c.execute(sql + ' ORDER BY c.position,c.id,p.position,p.id DESC', args).fetchall()
 
 
 def product(pid):

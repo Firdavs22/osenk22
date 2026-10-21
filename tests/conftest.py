@@ -21,6 +21,7 @@ def shop(tmp_path, monkeypatch):
     monkeypatch.setattr(config, 'COOKIE_SECURE', False)
     monkeypatch.setattr(config, 'PUBLIC_URL', '')
     monkeypatch.setattr(config, 'MAX_CA_BUNDLE', '')
+    monkeypatch.setattr(config, 'TBANK_CA_BUNDLE', '')
     db.seed()
     with db.connect(True) as c:
         c.executemany('UPDATE settings SET value=? WHERE key=?', [('0', 'auto_accept'), ('1', 'orders_open'), ('0', 'minimum_order'), ('г. Москва, улица Примерная, 1', 'address')])

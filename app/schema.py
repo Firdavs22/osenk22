@@ -11,11 +11,13 @@ DEFAULTS = {
 
 
 def migrate(c):
+    c.execute('CREATE TABLE IF NOT EXISTS categories(id INTEGER PRIMARY KEY, name TEXT NOT NULL UNIQUE)')
     first_accounts_upgrade = not c.execute("SELECT 1 FROM sqlite_master WHERE type='table' AND name='customer_accounts'").fetchone()
     c.execute('''CREATE TABLE IF NOT EXISTS outbox(
         id INTEGER PRIMARY KEY,chat_id INTEGER NOT NULL,text TEXT NOT NULL,
         attempts INTEGER NOT NULL DEFAULT 0,next_try REAL NOT NULL DEFAULT 0,sent INTEGER NOT NULL DEFAULT 0)''')
     columns = {
+        'categories': {'position': 'INTEGER NOT NULL DEFAULT 1000000'},
         'products': {'tags': "TEXT NOT NULL DEFAULT ''", 'iiko_id': "TEXT NOT NULL DEFAULT ''", 'iiko_size': "TEXT NOT NULL DEFAULT ''", 'iiko_source': "TEXT NOT NULL DEFAULT ''"},
         'orders': {'channel': "TEXT NOT NULL DEFAULT 'telegram'", 'payment_method': "TEXT NOT NULL DEFAULT 'cash'",
                    'payment_status': "TEXT NOT NULL DEFAULT 'unpaid'", 'public_token': 'TEXT',
@@ -27,6 +29,7 @@ def migrate(c):
                    'subscription_order': 'INTEGER', 'subscription_bot': 'INTEGER'},
     }
     columns['products'].update({k: "TEXT NOT NULL DEFAULT ''" for k in ('allergens','nutrition','storage')})
+    columns['products']['position'] = 'INTEGER NOT NULL DEFAULT 1000000'
     columns['products'].update({'iiko_available':'INTEGER NOT NULL DEFAULT 1',
         'iiko_resume_active':'INTEGER NOT NULL DEFAULT 0',
         'iiko_photo':"TEXT NOT NULL DEFAULT ''", 'iiko_photo_url':"TEXT NOT NULL DEFAULT ''"})
@@ -47,6 +50,8 @@ def migrate(c):
         "CREATE TABLE IF NOT EXISTS iiko_jobs(order_id INTEGER PRIMARY KEY REFERENCES orders(id), external_id TEXT UNIQUE NOT NULL, state TEXT NOT NULL DEFAULT 'pending', attempts INTEGER NOT NULL DEFAULT 0, next_try REAL NOT NULL DEFAULT 0, error TEXT NOT NULL DEFAULT '', payload TEXT NOT NULL DEFAULT '', credentials TEXT NOT NULL DEFAULT '')",
     ]:
         c.execute(sql)
+    if 'init_error' not in {row['name'] for row in c.execute('PRAGMA table_info(payments)')}:
+        c.execute("ALTER TABLE payments ADD COLUMN init_error TEXT NOT NULL DEFAULT ''")
     existing = {row['name'] for row in c.execute('PRAGMA table_info(menu_images)')}
     for name, definition in {'error':"TEXT NOT NULL DEFAULT ''", 'job_token':"TEXT NOT NULL DEFAULT ''",
                              'etag':"TEXT NOT NULL DEFAULT ''", 'last_modified':"TEXT NOT NULL DEFAULT ''",
