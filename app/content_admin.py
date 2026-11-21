@@ -241,17 +241,17 @@ async def check_iiko(request: Request):
 @router.post('/admin/integrations/telegram/check')
 async def check_telegram(request: Request):
     from .admin import form_data, redirect
-    from aiogram import Bot
+    from .telegram_connection import create_bot, connection_error
     await form_data(request)
     cfg = get_config('telegram')
     try:
-        async with Bot(cfg.get('token') or config.BOT_TOKEN) as bot:
+        async with create_bot(cfg.get('token') or config.BOT_TOKEN, timeout=15) as bot:
             me = await bot.get_me()
         from .order_updates import record_bot
         record_bot(me.id,me.username,cfg.get('token') or config.BOT_TOKEN)
         return redirect('/admin/integrations',ok=f'Подключён бот @{me.username}. Проверка getMe выполнена; сообщения не отправлялись.')
-    except Exception:
-        return redirect('/admin/integrations',error='Telegram не подтвердил токен')
+    except Exception as exc:
+        return redirect('/admin/integrations',error=connection_error(exc))
 
 
 @router.post('/admin/payments/{oid:int}/check')

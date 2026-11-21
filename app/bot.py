@@ -5,7 +5,8 @@ import secrets
 import time
 from contextlib import suppress
 
-from aiogram import Bot, Dispatcher, F
+from aiogram import Dispatcher, F
+from aiogram.utils.token import TokenValidationError
 from aiogram.exceptions import TelegramAPIError, TelegramForbiddenError, TelegramRetryAfter, TelegramBadRequest
 from aiogram.filters import Command
 from aiogram.types import (BotCommand, CallbackQuery, FSInputFile, InlineKeyboardButton,
@@ -16,6 +17,7 @@ from . import config, db
 from .chat_screen import screen
 from .mini_apps import app_url
 from . import customer_accounts as accounts
+from .telegram_connection import create_bot, connection_error, ProxyConfigurationError
 
 log = logging.getLogger(__name__)
 dp = Dispatcher()
@@ -456,7 +458,12 @@ async def main():
         if not token:
             await asyncio.sleep(15)
             continue
-        bot = Bot(token)
+        try:
+            bot = create_bot(token)
+        except (ProxyConfigurationError, TokenValidationError) as exc:
+            log.error('%s', connection_error(exc))
+            await asyncio.sleep(15)
+            continue
         tasks = []
         try:
             from .order_updates import record_bot
@@ -484,8 +491,8 @@ async def main():
             done, _ = await asyncio.wait(tasks, return_when=asyncio.FIRST_COMPLETED)
             for task in done:
                 task.result()
-        except TelegramAPIError:
-            log.warning('Telegram unavailable; retrying in 15 seconds')
+        except TelegramAPIError as exc:
+            log.warning('%s Повтор через 15 секунд.', connection_error(exc))
             await asyncio.sleep(15)
         finally:
             for task in tasks:
