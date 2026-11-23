@@ -25,7 +25,11 @@ router = APIRouter()
 
 
 def menu_failure(exc, cfg, stage):
-    """Share failure metadata, never response bodies, credentials or exception text."""
+    """Share failure metadata and a bounded description with credentials redacted."""
+    labels = {'authorization':'авторизация', 'menu_request':'загрузка меню',
+              'menu_processing':'обработка ответа iiko', 'catalog_preview':'подготовка каталога',
+              'organizations':'организации', 'externalMenus':'список внешних меню',
+              'terminalGroups':'терминальные группы', 'paymentTypes':'типы оплаты'}
     report = {'stage':stage, 'exceptionType':type(exc).__name__}
     locations = []
     trace = exc.__traceback__
@@ -55,26 +59,38 @@ def menu_failure(exc, cfg, stage):
                     report['correlationId'] = correlation
             except (ValueError, TypeError, AttributeError):
                 pass
+            description = payload.get('errorDescription')
+            if isinstance(description, str) and description.strip():
+                authorization = exc.request.headers.get('Authorization', '')
+                sensitive_values = secrets_in_config + [authorization, authorization.partition(' ')[2]]
+                for value in sorted(set(sensitive_values), key=len, reverse=True):
+                    if value:
+                        description = description.replace(value, '[СКРЫТО]')
+                report['errorDescription'] = ' '.join(description.split())[:600]
         hint = {
             400:'iiko отклонила параметры запроса. Проверьте ID меню, организацию и ценовую категорию.',
             401:'iiko отклонила авторизацию.',
             403:'iiko запретила доступ к запрошенным данным.',
             404:'Запрошенные данные или метод iiko не найдены.',
+            410:'Запрошенный метод iiko больше недоступен.',
             429:'Превышен лимит запросов iiko. Повторите позже.',
         }.get(exc.response.status_code, 'iiko вернула ошибку HTTP.')
-        label = 'авторизация' if report['stage'] == 'authorization' else 'загрузка меню'
+        label = labels.get(report['stage'], 'проверка iiko')
         message = f"{hint} HTTP {report['httpStatus']}. Этап: {label}."
         if report.get('errorCode'):
             message += f" Код iiko: {report['errorCode']}."
+        if report.get('errorDescription'):
+            message += f" Пояснение iiko: {report['errorDescription']}"
     elif isinstance(exc, httpx.TimeoutException):
         message = 'Не дождались ответа iiko. Повторите позже.'
     elif isinstance(exc, httpx.RequestError):
         message = 'VPS не смог выполнить сетевой запрос к iiko.'
     else:
-        label = {'menu_request':'загрузка меню', 'menu_processing':'обработка ответа iiko',
-                 'catalog_preview':'подготовка каталога'}.get(stage, 'проверка меню')
+        label = labels.get(stage, 'проверка iiko')
         message = f"Ошибка на этапе «{label}»: {report['exceptionType']}."
-    return report, message + ' Каталог не изменён. Скачайте диагностику меню для разбора ошибки.'
+    if stage in ('menu_request', 'menu_processing', 'catalog_preview'):
+        message += ' Каталог не изменён. Скачайте диагностику меню для разбора ошибки.'
+    return report, message
 
 
 def source_key(cfg):

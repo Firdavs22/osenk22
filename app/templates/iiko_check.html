@@ -1,1 +1,8 @@
-{% extends 'base.html' %}{% block content %}<header><h1>Справочники iiko</h1><a href="/admin/integrations">← Подключения</a></header><p>Доступ подтверждён. Скопируйте нужные UUID организации, терминала, оплаты и товаров. Данные не меняют локальное меню автоматически.</p><pre class="panel padded integration-json">{{ result }}</pre>{% endblock %}
+{% extends 'base.html' %}
+{% block content %}
+<header><h1>Справочники iiko</h1><a href="/admin/integrations">← Подключения</a></header>
+{% for error in errors %}<p class="alert error">{{ error }}</p>{% endfor %}
+<p>Результаты проверки организаций, доступных внешних меню, терминалов и типов оплаты.</p>
+<p>Для загрузки блюд используйте «Загрузить меню — предпросмотр» в настройках интеграции.</p>
+<pre class="panel padded integration-json">{{ result }}</pre>
+{% endblock %}

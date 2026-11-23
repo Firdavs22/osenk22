@@ -191,7 +191,8 @@ def test_menu_http_failure_shown_and_downloadable_without_secrets(client,monkeyp
     assert failure['stage']==stage and failure['httpStatus']==status and failure['correlationId']==SIZE
     for output in (page.text,report.text):
         assert 'private-token' not in output and CFG['client_secret'] not in output
-        assert 'errorDescription' not in output and 'Authorization' not in output
+        assert 'Authorization' not in output
+    assert failure['errorDescription'] == '[СКРЫТО] [СКРЫТО]'
     assert [dict(p) for p in db.products()]==before
 
 
@@ -226,6 +227,63 @@ def test_menu_error_metadata_rejects_sensitive_or_malformed_fields():
     report,message=imp.menu_failure(error,{'api_key':'SECRET_API_KEY'},'menu_request')
     assert 'errorCode' not in report and 'correlationId' not in report
     assert 'do not print' not in message
+
+
+def test_menu_price_category_description_is_reported():
+    request = httpx.Request('POST', 'https://api-ru.iiko.services/api/2/menu/by_id')
+    response = httpx.Response(400, request=request, json={
+        'error':'EXTERNAL_MENU_DATA_MISSED', 'errorDescription':'Price category id is not correct.'})
+    error = httpx.HTTPStatusError('failure', request=request, response=response)
+    report, message = imp.menu_failure(error, CFG, 'menu_request')
+    assert report['errorDescription'] == 'Price category id is not correct.'
+    assert report['errorDescription'] in message
+
+
+@pytest.mark.parametrize('available_menu', ['123', 'old-menu'])
+def test_reference_check_uses_external_menu_and_reports_missing_binding(client, monkeypatch, available_menu):
+    from app import content_admin
+
+    set_config('iiko', CFG)
+    csrf = login(client)
+    calls = []
+
+    async def api(cfg, path, body):
+        calls.append(path)
+        assert path != '/api/1/nomenclature'
+        if path == '/api/2/menu':
+            return {'externalMenus':[{'id':available_menu, 'name':'Меню для сайта'}], 'priceCategories':[]}
+        return {'organizations':[{'id':ORG}]}
+
+    monkeypatch.setattr(content_admin, 'iiko_call', api)
+    before = [dict(p) for p in db.products()]
+    page = client.post('/admin/integrations/iiko/check', data={'csrf':csrf})
+    assert page.status_code == 200
+    assert len(calls) == 4
+    assert 'Меню для сайта' in page.text and ORG in page.text
+    assert ('отсутствует в списке доступных' in page.text) == (available_menu != '123')
+    assert [dict(p) for p in db.products()] == before
+
+
+def test_reference_check_preserves_successful_results_on_failure(client, monkeypatch):
+    from app import content_admin
+
+    set_config('iiko', CFG)
+    csrf = login(client)
+
+    async def api(cfg, path, body):
+        if path == '/api/1/terminal_groups':
+            request = httpx.Request('POST', 'https://api-ru.iiko.services' + path)
+            httpx.Response(403, request=request, json={'errorDescription':CFG['client_secret']}).raise_for_status()
+        if path == '/api/2/menu':
+            return {'externalMenus':[{'id':'123', 'name':'Доступное меню'}]}
+        return {'result':'success'}
+
+    monkeypatch.setattr(content_admin, 'iiko_call', api)
+    page = client.post('/admin/integrations/iiko/check', data={'csrf':csrf})
+    assert page.status_code == 200
+    assert 'Доступное меню' in page.text and 'HTTP 403' in page.text
+    assert 'терминальные группы' in page.text
+    assert CFG['client_secret'] not in page.text
 
 
 @pytest.mark.parametrize('url',['http://102922.selcdn.ru/a','https://127.0.0.1/a','https://evil.test/a',

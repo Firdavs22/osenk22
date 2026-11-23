@@ -219,23 +219,37 @@ async def save_integration(request: Request, name: str):
 
 @router.post('/admin/integrations/iiko/check')
 async def check_iiko(request: Request):
-    from .admin import form_data, render, redirect
+    from .admin import form_data, render
+    from .menu_import import menu_failure
     await form_data(request)
     cfg = get_config('iiko')
-    try:
-        organizations = await iiko_call(cfg,'/api/1/organizations',{'returnAdditionalInfo': True,'includeDisabled': False})
-        menus = await iiko_call(cfg,'/api/2/menu',{})
-        catalog = None
-        groups = None
-        payment_types = None
-        if cfg.get('organization_id'):
-            orgs = {'organizationIds':[cfg['organization_id']]}
-            groups = await iiko_call(cfg,'/api/1/terminal_groups',orgs)
-            payment_types = await iiko_call(cfg,'/api/1/payment_types',orgs)
-            catalog = await iiko_call(cfg,'/api/1/nomenclature',{'organizationId':cfg['organization_id']})
-        return render(request,'iiko_check.html',result=json.dumps({'organizations':organizations,'externalMenus':menus,'terminalGroups':groups,'paymentTypes':payment_types,'catalog':catalog},ensure_ascii=False,indent=2),page='integrations')
-    except Exception:
-        return redirect('/admin/integrations',error='Не удалось прочитать iiko. Проверьте ключи, права API и доступность сервиса.')
+    requests = [
+        ('organizations', '/api/1/organizations', {'returnAdditionalInfo':True, 'includeDisabled':False}),
+        ('externalMenus', '/api/2/menu', {}),
+    ]
+    if cfg.get('organization_id'):
+        orgs = {'organizationIds':[cfg['organization_id']]}
+        requests.extend([
+            ('terminalGroups', '/api/1/terminal_groups', orgs),
+            ('paymentTypes', '/api/1/payment_types', orgs),
+        ])
+    results = {}
+    errors = []
+    for name, path, body in requests:
+        try:
+            results[name] = await iiko_call(cfg, path, body)
+        except Exception as exc:
+            report, message = menu_failure(exc, cfg, name)
+            results[name] = {'failure':report}
+            errors.append(message)
+    menus = results.get('externalMenus', {}).get('externalMenus')
+    if isinstance(menus, list) and cfg.get('external_menu'):
+        available = {str(menu.get('id')) for menu in menus}
+        if str(cfg['external_menu']) not in available:
+            errors.append(f"Меню {cfg['external_menu']} отсутствует в списке доступных этому API-ключу. "
+                          'Проверьте поле «Внешнее меню» у интеграции в настройках Cloud API iikoWeb.')
+    return render(request, 'iiko_check.html', result=json.dumps(results, ensure_ascii=False, indent=2),
+                  errors=errors, page='integrations')
 
 
 @router.post('/admin/integrations/telegram/check')
